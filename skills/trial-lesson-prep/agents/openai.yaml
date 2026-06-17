@@ -1,0 +1,4 @@
+interface:
+  display_name: "试听课数学备课"
+  short_description: "结合资料库与真题设计试听课，生成详细教案、知识点详解和批注课件"
+  default_prompt: "Use $trial-lesson-prep to prepare a trial math lesson with recursive local-library research, verified exam questions, detailed teacher notes, and a tablet-annotation Beamer PDF."

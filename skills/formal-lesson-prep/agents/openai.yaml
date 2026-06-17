@@ -1,0 +1,4 @@
+interface:
+  display_name: "正式课数学备课"
+  short_description: "递归检索资料库与真题，生成详细逐字稿、知识点详解和手写批注课件"
+  default_prompt: "Use $formal-lesson-prep to prepare a formal math lesson with recursive local-library research, verified exam questions, detailed teacher notes, and a tablet-annotation Beamer PDF."

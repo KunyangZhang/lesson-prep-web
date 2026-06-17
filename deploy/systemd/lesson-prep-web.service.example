@@ -1,0 +1,16 @@
+[Unit]
+Description=Lesson Prep Web
+After=network.target
+
+[Service]
+Type=simple
+User=kunya
+WorkingDirectory=/home/kunya/lesson-prep-web
+EnvironmentFile=/home/kunya/lesson-prep-web/.env
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+

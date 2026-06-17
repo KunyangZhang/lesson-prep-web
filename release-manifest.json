@@ -1,0 +1,29 @@
+{
+  "name": "lesson-prep-web",
+  "version": "0.1.0",
+  "createdAt": "2026-06-12T13:47:58.348Z",
+  "rootFolder": "lesson-prep-web-0.1.0",
+  "includes": {
+    "dist": true,
+    "packagedSkills": [
+      "trial-lesson-prep",
+      "formal-lesson-prep"
+    ],
+    "deployExamples": true,
+    "source": true,
+    "nodeModules": false,
+    "appData": false,
+    "envSecrets": false
+  },
+  "serverCommands": [
+    "bash scripts/server-setup.sh",
+    "nano .env",
+    "npm start"
+  ],
+  "notes": [
+    "Copy deploy/env.production.example to .env on the server and edit paths/secrets before starting.",
+    "Run bash scripts/server-setup.sh --smoke on the server if you want an isolated smoke test with fake Codex.",
+    "Run npm run codex:smoke on the server after Codex CLI is installed and logged in to verify real Codex generation.",
+    "Use systemd for long-running production service instead of leaving npm start in an SSH terminal."
+  ]
+}

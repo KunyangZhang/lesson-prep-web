@@ -1,0 +1,67 @@
+\documentclass[aspectratio=169]{ctexbeamer}
+
+\usepackage{amsmath,amssymb}
+
+\usetheme{default}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}{
+  \hfill
+  \usebeamerfont{page number in head/foot}
+  \usebeamercolor[fg]{page number in head/foot}
+  \insertframenumber/\inserttotalframenumber
+  \hspace*{1em}\vskip0.8em
+}
+
+\definecolor{LessonInk}{RGB}{24,35,52}
+\definecolor{LessonAccent}{RGB}{38,91,143}
+\definecolor{LessonMuted}{RGB}{102,115,130}
+
+\setbeamercolor{normal text}{fg=LessonInk,bg=white}
+\setbeamercolor{frametitle}{fg=LessonInk,bg=white}
+\setbeamercolor{structure}{fg=LessonAccent}
+\setbeamercolor{page number in head/foot}{fg=LessonMuted}
+\setbeamerfont{frametitle}{size=\Large,series=\bfseries}
+\setbeamerfont{normal text}{size=\large}
+\setbeamersize{text margin left=1cm,text margin right=1cm}
+
+% Leave a blank area for tablet handwriting.
+\newcommand{\writingspace}[1][0.48\textheight]{
+  \par\vspace{0.4em}
+  \begin{beamercolorbox}[wd=\textwidth,ht=#1,dp=0ex]{normal text}
+  \end{beamercolorbox}
+}
+
+\title{[课程主题]}
+\subtitle{[学生姓名] · [日期]}
+\author{[老师姓名]}
+\date{}
+
+\begin{document}
+
+\begin{frame}
+  \titlepage
+\end{frame}
+
+% Replace the sample frames below with the actual lesson.
+\begin{frame}{[题目标题]}
+  [题目正文]
+
+  \textbf{请在下方写出你的思路：}
+  \writingspace
+\end{frame}
+
+\begin{frame}{[题目标题]：关键提示}
+  [只展示一条必要提示，不提前暴露完整答案。]
+
+  \writingspace[0.36\textheight]
+\end{frame}
+
+\begin{frame}{[题目标题]：方法回顾}
+  \begin{enumerate}
+    \item [识别信号]
+    \item [关键步骤]
+    \item [检查方式]
+  \end{enumerate}
+\end{frame}
+
+\end{document}
