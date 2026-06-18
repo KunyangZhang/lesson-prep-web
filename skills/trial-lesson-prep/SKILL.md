@@ -172,3 +172,9 @@ Before finishing:
 - Compile the classroom PDF with XeLaTeX and confirm it opens.
 - Render representative PDF pages and inspect readability, answer reveal order, and writable space.
 - Confirm every displayed diagram is mathematically accurate.
+
+## Feishu Finalization
+
+Do not run `lark-cli` from inside this skill. The host web service owns Feishu finalization after the Codex job exits successfully.
+
+After the four local deliverables pass the quality gate, finish with a concise local completion summary. The service will then use the current machine's logged-in `lark-cli --as user` identity to create the course folder under `LY9efBiWjlEAQWdqPrucuLl4nic`, import/upload the four files, create the calendar event when the lesson time is valid, and send the Feishu sync result message.

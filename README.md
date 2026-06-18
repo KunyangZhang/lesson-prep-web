@@ -150,3 +150,38 @@ GET /api/health
 生成的 `md` / `pdf` 课件、上传到资料库的原始文件仍保存在 `PREP_WORKSPACE` 里。服务器上线后建议同时备份整个 `PREP_WORKSPACE` 目录和 `APP_DATA_DIR`。
 
 系统诊断会检查 Codex CLI 或 SSH 运行配置、两个项目内置 skill、工作区路径、资料库路径、应用数据目录、资料索引数量和最近失败任务。
+
+## 飞书集成
+
+项目不再提供飞书机器人入口。备课任务仍然从网页创建和运行；任务完成后，服务端使用当前机器已经登录的官方 `lark-cli` 用户身份自动收尾：
+
+- 在固定父目录下按学生/课程创建子文件夹。
+- 将 `老师逐字稿.md`、`知识点详解.md`、`课后反馈.md` 导入为飞书新版文档。
+- 将 `课堂课件.pdf` 上传为云空间文件。
+- 如果课程时间有效，创建飞书日程，并把本地目录、飞书目录和四个文件结果写进日程描述。
+- 通过 `lark-cli im +messages-send --as user` 把同步结果发给 `FEISHU_NOTIFY_OPEN_ID`。
+
+服务器运行前先在同一用户下完成一次登录：
+
+```bash
+lark-cli auth login --recommend
+```
+
+服务器 `.env` 只需要保留同步配置：
+
+```bash
+FEISHU_LESSON_PARENT_FOLDER_TOKEN=LY9efBiWjlEAQWdqPrucuLl4nic
+FEISHU_NOTIFY_OPEN_ID=
+FEISHU_SYNC_ENABLED=true
+FEISHU_LESSON_CALENDAR_ENABLED=true
+FEISHU_LESSON_CALENDAR_ID=
+FEISHU_LESSON_CALENDAR_ATTENDEE_IDS=
+```
+
+备课产物默认会在 `FEISHU_LESSON_PARENT_FOLDER_TOKEN` 指定的父目录下按学生/课程创建子文件夹，然后把三个 Markdown 导入为飞书新版文档、把 PDF 上传为云空间文件。默认父目录是：
+
+```text
+https://my.feishu.cn/drive/folder/LY9efBiWjlEAQWdqPrucuLl4nic
+```
+
+所有飞书操作都使用当前 `lark-cli` 登录用户执行，不再注入 App ID / App Secret，不再使用 bot strict mode。可用 `FEISHU_SYNC_ENABLED=false` 关闭完成后同步；可用 `FEISHU_LESSON_CALENDAR_ENABLED=false` 只关闭日程创建。

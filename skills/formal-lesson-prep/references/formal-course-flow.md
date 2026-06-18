@@ -26,6 +26,7 @@ Formal lessons can still borrow the trial-lesson strengths: diagnostic opener, v
 6. Write the teacher script and detailed teacher-facing knowledge file as Markdown files.
 7. Build a clean LaTeX Beamer classroom PDF with writable tablet space.
 8. Check the files for no fenced code blocks and correct math delimiters.
+9. Fixed final step: stop after the four local deliverables pass quality checks. The host service will sync them to Feishu with the current logged-in `lark-cli --as user` identity, create the calendar event when possible, and send the sync result message.
 
 ## Knowledge Completeness Checklist
 

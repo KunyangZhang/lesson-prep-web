@@ -14,6 +14,7 @@
     "package:release": "node scripts/package-release.mjs"
   },
   "dependencies": {
+    "@larksuite/cli": "^1.0.55",
     "@vitejs/plugin-react": "^5.0.0",
     "bcryptjs": "^3.0.2",
     "cookie": "^1.0.2",

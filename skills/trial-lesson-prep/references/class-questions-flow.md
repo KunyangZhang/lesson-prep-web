@@ -30,6 +30,11 @@ Send feedback in the group after the class. Include:
 - Suggestions for later study.
 - Board screenshot.
 
+### 备课生成完成后的固定收尾
+
+- Stop after the four local deliverables pass quality checks.
+- The host service will use the current logged-in `lark-cli --as user` identity to import/upload the four deliverables, create the Feishu calendar event when possible, and send the sync result message.
+
 ## Preparation Checklist
 
 - Tablet/computer plus drawing tablet.

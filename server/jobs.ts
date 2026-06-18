@@ -3,6 +3,7 @@ import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { config, logsDir, materialRoot } from "./config.js";
 import { listCourseFiles } from "./files.js";
+import { emitJobFinished } from "./jobEvents.js";
 import { assessCourseQuality } from "./quality.js";
 import { searchRag } from "./rag.js";
 import type { Course, Job, Student } from "./types.js";
@@ -158,6 +159,7 @@ export function buildCodexPrompt(store: Store, student: Student, course: Course,
    - 不要留下未包裹的 LaTeX 片段，例如不要写「求 \\vec{a}\\cdot\\vec{b}」，必须写成「求 $\\vec{a}\\cdot\\vec{b}$」
    - 不要混用 \\(...\\)、\\[...\\] 和普通括号包公式；如果引用资料里有这种写法，写入最终 md 前必须改成美元符号格式
    - 向量命令优先写成带花括号形式，例如 \\vec{a}、\\vec{b}
+9. 只负责生成本地四个产物；不要在 Codex 任务内部调用 lark-cli。任务完成后，宿主服务会用当前机器已登录的 lark-cli user 身份统一完成飞书上传、日程创建和消息通知。
 
 学生信息：
 - 学生姓名：${student.name}
@@ -209,6 +211,20 @@ function buildCodexExecArgs(workspace: string, lastMessagePath?: string) {
   if (config.codexModel) args.push("--model", config.codexModel);
   args.push("-");
   return args;
+}
+
+async function buildLessonFeishuEnv() {
+  const parentFolderToken =
+    process.env.LESSON_FEISHU_PARENT_FOLDER_TOKEN || process.env.FEISHU_LESSON_PARENT_FOLDER_TOKEN || "LY9efBiWjlEAQWdqPrucuLl4nic";
+  return {
+    LARKSUITE_CLI_NO_UPDATE_NOTIFIER: process.env.LARKSUITE_CLI_NO_UPDATE_NOTIFIER || "1",
+    LARKSUITE_CLI_REMOTE_META: process.env.LARKSUITE_CLI_REMOTE_META || "off",
+    LESSON_FEISHU_PARENT_FOLDER_TOKEN: parentFolderToken,
+    FEISHU_LESSON_PARENT_FOLDER_TOKEN: parentFolderToken,
+    FEISHU_LESSON_CALENDAR_ENABLED: process.env.FEISHU_LESSON_CALENDAR_ENABLED || "true",
+    FEISHU_LESSON_CALENDAR_ID: process.env.FEISHU_LESSON_CALENDAR_ID || "",
+    FEISHU_LESSON_CALENDAR_ATTENDEE_IDS: process.env.FEISHU_LESSON_CALENDAR_ATTENDEE_IDS || ""
+  };
 }
 
 function buildJobCommand(course: Course, lastMessagePath: string) {
@@ -303,31 +319,11 @@ export function runCodexJob(store: Store, jobId: string) {
   course.updatedAt = nowIso();
   store.save();
 
-  const command = job.runner === "ssh" ? "ssh" : config.codexCommand;
-  const child = spawn(command, job.args || [], {
-    cwd: config.workspaceRoot,
-    env: {
-      ...process.env,
-      PREP_WORKSPACE: config.workspaceRoot,
-      PREP_MATERIAL_ROOT: materialRoot,
-      LESSON_PREP_WEB_ROOT: config.projectRoot
-    },
-    shell: process.platform === "win32",
-    windowsHide: true
-  });
-  activeJobs.set(jobId, child);
-
-  child.stdin.write(prompt);
-  child.stdin.end();
-
   const append = (chunk: Buffer | string) => {
     fs.appendFileSync(job.logPath, chunk.toString(), "utf8");
   };
 
-  child.stdout.on("data", append);
-  child.stderr.on("data", append);
-
-  child.on("error", (error) => {
+  const failBeforeSpawn = (error: Error) => {
     job.status = "failed";
     job.error = error.message;
     job.endedAt = nowIso();
@@ -336,35 +332,73 @@ export function runCodexJob(store: Store, jobId: string) {
     activeJobs.delete(jobId);
     store.save();
     append(`\n[spawn error] ${error.message}\n`);
-  });
+    emitJobFinished(store, course, job);
+  };
 
-  child.on("close", (code) => {
-    activeJobs.delete(jobId);
-    if (job.status === "canceled") {
+  void (async () => {
+    let lessonFeishuEnv: Record<string, string> = {};
+    try {
+      lessonFeishuEnv = await buildLessonFeishuEnv();
+    } catch (error) {
+      append(
+        `\n[feishu env warning] failed to prepare lark-cli sync env: ${
+          error instanceof Error ? error.message : String(error)
+        }\n`
+      );
+    }
+
+    const command = job.runner === "ssh" ? "ssh" : config.codexCommand;
+    const child = spawn(command, job.args || [], {
+      cwd: config.workspaceRoot,
+      env: {
+        ...process.env,
+        ...lessonFeishuEnv,
+        PREP_WORKSPACE: config.workspaceRoot,
+        PREP_MATERIAL_ROOT: materialRoot,
+        LESSON_PREP_WEB_ROOT: config.projectRoot
+      },
+      shell: process.platform === "win32",
+      windowsHide: true
+    });
+    activeJobs.set(jobId, child);
+
+    child.stdin.write(prompt);
+    child.stdin.end();
+
+    child.stdout.on("data", append);
+    child.stderr.on("data", append);
+
+    child.on("error", failBeforeSpawn);
+
+    child.on("close", (code) => {
+      activeJobs.delete(jobId);
+      if (job.status === "canceled") {
+        store.save();
+        return;
+      }
+      const files = listCourseFiles(course.outputDir);
+      job.exitCode = code;
+      job.endedAt = nowIso();
+      job.quality = assessCourseQuality(course);
+      const qualityFailed = job.quality.status === "fail";
+      if (code === 0 && files.length > 0 && !qualityFailed) {
+        job.status = "completed";
+        course.status = "completed";
+      } else {
+        job.status = "failed";
+        course.status = "failed";
+        job.error =
+          code === 0 && qualityFailed
+            ? "生成质量检查未通过，请查看缺失文件或异常项。"
+            : code === 0
+            ? "Codex exited successfully, but no previewable course files were found."
+            : `Codex exited with code ${code}.`;
+      }
+      course.updatedAt = nowIso();
       store.save();
-      return;
-    }
-    const files = listCourseFiles(course.outputDir);
-    job.exitCode = code;
-    job.endedAt = nowIso();
-    job.quality = assessCourseQuality(course);
-    const qualityFailed = job.quality.status === "fail";
-    if (code === 0 && files.length > 0 && !qualityFailed) {
-      job.status = "completed";
-      course.status = "completed";
-    } else {
-      job.status = "failed";
-      course.status = "failed";
-      job.error =
-        code === 0 && qualityFailed
-          ? "生成质量检查未通过，请查看缺失文件或异常项。"
-          : code === 0
-          ? "Codex exited successfully, but no previewable course files were found."
-          : `Codex exited with code ${code}.`;
-    }
-    course.updatedAt = nowIso();
-    store.save();
-  });
+      emitJobFinished(store, course, job);
+    });
+  })().catch(failBeforeSpawn);
 }
 
 export function cancelCodexJob(store: Store, jobId: string) {

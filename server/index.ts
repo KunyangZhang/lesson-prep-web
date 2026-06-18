@@ -14,7 +14,9 @@ import {
 import { backupFileName, createAppBackup } from "./backup.js";
 import { config, ensureAppDirs, tempUploadDir, uploadRoot } from "./config.js";
 import { createDiagnostics } from "./diagnostics.js";
+import { syncCourseToFeishu } from "./feishuSync.js";
 import { assertWithinWorkspace, listCourseFiles, uniqueDestination } from "./files.js";
+import { onJobFinished } from "./jobEvents.js";
 import { cancelCodexJob, createCodexJob, recoverInterruptedJobs, runCodexJob } from "./jobs.js";
 import { assessCourseQuality } from "./quality.js";
 import { indexMaterialFile, reindexMaterialRoot, searchRag } from "./rag.js";
@@ -39,7 +41,16 @@ const upload = multer({
 });
 
 app.use(securityHeaders);
-app.use(express.json({ limit: "2mb" }));
+app.use(
+  express.json({
+    limit: "2mb",
+    verify: (req, res, buf) => {
+      (req as Request & { rawBody?: string }).rawBody = buf.toString("utf8");
+    }
+  })
+);
+
+onJobFinished(syncCourseToFeishu);
 
 function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => {
