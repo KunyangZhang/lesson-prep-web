@@ -5,7 +5,7 @@ import { config, logsDir, materialRoot } from "./config.js";
 import { listCourseFiles } from "./files.js";
 import { emitJobFinished } from "./jobEvents.js";
 import { assessCourseQuality } from "./quality.js";
-import { searchRag } from "./rag.js";
+import { buildRagPlan } from "./rag.js";
 import type { Course, Job, Student } from "./types.js";
 import type { Store } from "./store.js";
 import { newId, nowIso } from "./store.js";
@@ -77,22 +77,6 @@ function mapRunnerPaths(text: string) {
     .join("\n");
 }
 
-function buildRagContext(store: Store, course: Course) {
-  const query = [
-    course.stage,
-    course.grade,
-    course.province,
-    course.textbook,
-    course.lessonKind,
-    course.desiredContent,
-    course.notes
-  ]
-    .filter(Boolean)
-    .join(" ");
-
-  return searchRag(store, query, 8);
-}
-
 function readSmallFile(filePath: string, maxChars = 8000) {
   if (!fs.existsSync(filePath)) return "";
   const content = fs.readFileSync(filePath, "utf8");
@@ -114,22 +98,62 @@ function buildExistingWorkContext(store: Store, course: Course) {
   ].join("\n\n");
 }
 
+function buildAutoQualityRefineInstruction(course: Course, failedJob: Job) {
+  const issueLines =
+    failedJob.quality?.items
+      .filter((check) => check.status === "fail" || check.status === "warn")
+      .slice(0, 12)
+      .map((check) => `- ${check.label}：${check.message}`)
+      .join("\n") || "- 质量检查未通过，但没有详细条目。";
+
+  return `
+这是系统根据质量检查自动发起的补救生成，不要从零重做。
+
+本次只补救以下问题：
+${issueLines}
+
+补救要求：
+1. 先阅读课程目录现有文件，保留可用内容。
+2. 必须补齐或修正 _work/题目索引.md、_work/候选题池.md、_work/答案核对表.md、_work/课件页码映射.md、_work/内容丰富清单.md。
+3. 若题量不足，按 ${course.type === "trial" ? "试听课" : "正式课"} 和 ${course.durationMinutes} 分钟课长补充诊断、例题、变式、巩固、作业或口头微变式。
+4. 若答案核对表缺项或有存疑题，逐题重算并写清最终答案、关键条件、关键步骤、易错点、核对结论。
+5. 若逐字稿存在跳步或内容薄，按课堂页码逐页补老师说、追问、学生可能回答、纠错话术、板书或批注。
+6. 最终产物仍是老师逐字稿.md、知识点详解.md、课堂课件.pdf、课后反馈.md；最终产物不需要标注本地PDF来源，只有真题/模考题需要可靠来源。
+`.trim();
+}
+
 export function buildCodexPrompt(store: Store, student: Student, course: Course, options: CodexJobOptions = {}) {
   const skillDir = packagedSkillDir(course.type);
   const skillMd = path.join(skillDir, "SKILL.md");
-  const ragResults = buildRagContext(store, course);
+  const ragPlan = buildRagPlan(store, course, 8);
   const ragContext =
-    ragResults.length === 0
+    ragPlan.selected.length === 0
       ? "本地 RAG 暂无命中资料。仍需按 skill 要求搜索本地资料库和可靠网页来源。"
-      : ragResults
-          .map((result, index) => {
+      : [
+          `检索查询：${ragPlan.query || "[空]"}`,
+          `意图标签：${ragPlan.intentTags.length > 0 ? ragPlan.intentTags.join("、") : "[未识别]"}`,
+          "",
+          "入选资料：",
+          ...ragPlan.selected.map((result, index) => {
             return [
-              `【RAG ${index + 1}】${result.chunk.title}`,
-              `路径：${toRunnerPath(result.chunk.path)}`,
+              `【RAG ${index + 1}】${result.material.title}`,
+              `路径：${toRunnerPath(result.material.path)}`,
               `相关度：${result.score}`,
-              `摘录：${result.excerpt}`
+              `命中原因：${result.reason}`,
+              `匹配标签：${result.matchedTags.length > 0 ? result.matchedTags.join("、") : "[无]"}`,
+              "关键摘录：",
+              ...result.chunks.map((item, chunkIndex) => `- 摘录 ${chunkIndex + 1}（${item.score}）：${item.excerpt}`)
             ].join("\n");
-          })
+          }),
+          ragPlan.rejected.length > 0
+            ? [
+                "",
+                "未入选候选：",
+                ...ragPlan.rejected.map((item) => `- ${item.title}（${item.score}）：${item.reason}`)
+              ].join("\n")
+            : ""
+        ]
+          .filter(Boolean)
           .join("\n\n");
 
   const basePrompt = `
@@ -151,15 +175,29 @@ export function buildCodexPrompt(store: Store, student: Student, course: Course,
 4. 不要修改 lesson-prep-web 项目文件，不要移动无关历史备课文件
 5. 如果信息不足，请按 skill 规则使用 [待确认]，但仍生成可上课的初稿
 6. 资料库根目录是 ${toRunnerPath(materialRoot)}
-7. 优先参考下面的 RAG 命中资料；仍需按 skill 要求做本地资料库检索和可靠网页真题检索
-8. Markdown 里的数学公式必须规范：
+7. 优先阅读并使用“用户提供的本地题目/资料路径”中的文件；这些是人工指定资料，优先级高于自动 RAG
+8. 按下面的 RAG 检索计划使用入选资料：先阅读路径，再判断哪些题型/讲法适合本课；不要只复制摘录
+9. 仍需按 skill 要求做本地资料库检索和可靠网页真题检索，必要时补充 RAG 未覆盖的真题
+10. 大任务固定使用 sub-agent 分工；备课任务默认拆成四个工作流：题目提取、答案核对、课件生成、逐字稿和内容丰富。主 Agent 负责分派、整合和最终质量门禁，不能跳过答案核对、题量补充和逐字稿扩写。
+11. 必须先生成中间工作文件，再生成最终四件套；中间文件放在课程目录的 _work/ 下：
+   - _work/题目索引.md：列出候选与最终采用题，标注教学角色、难度、是否真题、是否进入课件；本地资料题不需要写入最终产物来源。
+   - _work/候选题池.md：把本地资料、RAG、网页真题整理成候选题池，区分可直接上课、可改编成变式、只适合作参考、不采用。
+   - _work/答案核对表.md：逐题写最终答案、关键条件、关键步骤、易错点、核对结论；不能出现未核对题。
+   - _work/课件页码映射.md：课堂PDF页码 -> 第X题/环节 -> 逐字稿章节；不要写本地PDF来源映射。
+   - _work/内容丰富清单.md：核对诊断、例题、变式、巩固、课后作业是否齐全。
+12. 采用两阶段内部流程：第一阶段完成题目提取、候选题池、答案核对、课程骨架；第二阶段再做课件生成、逐字稿和内容丰富、最终四件套。不要一上来直接写最终稿。
+13. 内容必须充实：题目序列要覆盖诊断、例题、变式、巩固、课后作业，逐字稿要按课堂页码逐页展开讲法、追问、学生可能反应、纠错话术和板书提示；不能只生成少量题或简略提纲。
+14. 课长最低题量标准：40-60分钟试听课至少包含诊断/陷阱题、模型题、同类验证题、变式或真题风格题、课后练习；90分钟正式课至少包含完整的诊断、例题、指导练习、独立变式、巩固检查和作业题组。若因用户指定资料太少而少于标准，必须在 _work/内容丰富清单.md 说明原因并补充口头微变式或作业。
+15. 来源规则：最终产物不需要标注本地PDF、本地页码或普通改编题来源；只有真题、官方考试题、模考题必须核验来源，写清年份、地区、试卷/考试名称、题号或URL。不能把本地题、改编题、资料库题伪称为真题。
+16. 最终自检重点是：答案是否已经核对、解法是否跳步、题量是否不足、逐字稿是否只是提纲。发现问题要先修正再结束。
+17. Markdown 里的数学公式必须规范：
    - 行内公式统一使用美元符号包裹，例如 $\\vec{a}=(2,-1)$、$X\\sim N(\\mu,\\sigma^2)$
    - 独立展示公式统一使用双美元符号块
    - 不要把 LaTeX 公式写成普通括号形式，例如不要写 (\\vec{a}=(2,-1))、(E(X)=n\\cdot\\frac{M}{N})
    - 不要留下未包裹的 LaTeX 片段，例如不要写「求 \\vec{a}\\cdot\\vec{b}」，必须写成「求 $\\vec{a}\\cdot\\vec{b}$」
    - 不要混用 \\(...\\)、\\[...\\] 和普通括号包公式；如果引用资料里有这种写法，写入最终 md 前必须改成美元符号格式
    - 向量命令优先写成带花括号形式，例如 \\vec{a}、\\vec{b}
-9. 只负责生成本地四个产物；不要在 Codex 任务内部调用 lark-cli。任务完成后，宿主服务会用当前机器已登录的 lark-cli user 身份统一完成飞书上传、日程创建和消息通知。
+18. 只负责生成本地四个产物；不要在 Codex 任务内部调用 lark-cli。任务完成后，宿主服务会用当前机器已登录的 lark-cli user 身份统一完成飞书上传、日程创建和消息通知。
 
 学生信息：
 - 学生姓名：${student.name}
@@ -181,7 +219,7 @@ export function buildCodexPrompt(store: Store, student: Student, course: Course,
 - 用户提供的本地题目/资料路径：${course.localFiles ? mapRunnerPaths(course.localFiles) : "[无]"}
 - 其他备注：${course.notes || "[无]"}
 
-本地 RAG 命中资料：
+本地 RAG 检索计划：
 ${ragContext}
 
 请完成备课并在最后简短列出生成的文件路径。`.trim();
@@ -381,6 +419,18 @@ export function runCodexJob(store: Store, jobId: string) {
       job.endedAt = nowIso();
       job.quality = assessCourseQuality(course);
       const qualityFailed = job.quality.status === "fail";
+      const shouldAutoRefine = code === 0 && files.length > 0 && qualityFailed && !job.refineInstruction;
+      if (shouldAutoRefine) {
+        job.status = "failed";
+        job.error = "生成质量检查未通过，系统已自动发起补救生成。";
+        course.updatedAt = nowIso();
+        store.save();
+        const refineJob = createCodexJob(store, course, {
+          refineInstruction: buildAutoQualityRefineInstruction(course, job)
+        });
+        runCodexJob(store, refineJob.id);
+        return;
+      }
       if (code === 0 && files.length > 0 && !qualityFailed) {
         job.status = "completed";
         course.status = "completed";

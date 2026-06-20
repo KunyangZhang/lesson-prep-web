@@ -57,8 +57,18 @@ export interface Course {
   outputDir: string;
   status: CourseStatus;
   jobId?: string;
+  feishuSync?: CourseFeishuSync;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CourseFeishuSync {
+  folderToken?: string;
+  folderUrl?: string;
+  calendarEventId?: string;
+  calendarId?: string;
+  lastJobId?: string;
+  lastSyncedAt?: string;
 }
 
 export interface Job {
@@ -85,7 +95,7 @@ export interface Material {
   path: string;
   size: number;
   mimeType?: string;
-  status: "indexed" | "failed" | "unsupported";
+  status: "indexed" | "failed" | "unsupported" | "needs_conversion" | "pending";
   chunkCount: number;
   error?: string;
   createdAt: string;

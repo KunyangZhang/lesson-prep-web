@@ -140,7 +140,7 @@ export interface Material {
   path: string;
   size: number;
   mimeType?: string;
-  status: "indexed" | "failed" | "unsupported";
+  status: "indexed" | "failed" | "unsupported" | "needs_conversion" | "pending";
   chunkCount: number;
   error?: string;
   createdAt: string;
@@ -149,6 +149,25 @@ export interface Material {
 
 export interface RagSearchResult {
   score: number;
+  scoreParts: Record<string, number>;
+  matchedTags: string[];
+  reason: string;
+  material: Material & { tags?: string[] };
+  chunks: Array<{
+    chunk: {
+      id: string;
+      materialId: string;
+      path: string;
+      title: string;
+      index: number;
+      text: string;
+      tokens: string[];
+      tags?: string[];
+      summary?: string;
+    };
+    excerpt: string;
+    score: number;
+  }>;
   chunk: {
     id: string;
     materialId: string;
@@ -157,6 +176,19 @@ export interface RagSearchResult {
     index: number;
     text: string;
     tokens: string[];
+    tags?: string[];
+    summary?: string;
   };
   excerpt: string;
+}
+
+export interface RagReindexJob {
+  status: "idle" | "running" | "completed" | "failed";
+  total: number;
+  processed: number;
+  current: string;
+  indexed: number;
+  error: string;
+  startedAt: string;
+  endedAt: string;
 }

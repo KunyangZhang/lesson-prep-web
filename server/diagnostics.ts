@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { config, materialRoot, uploadRoot } from "./config.js";
+import { getRagStats } from "./rag.js";
 import { nowIso } from "./store.js";
 import type { Store } from "./store.js";
 
@@ -89,6 +90,7 @@ function recentFailedJob(store: Store) {
 }
 
 export function createDiagnostics(store: Store) {
+  const ragStats = getRagStats(store);
   const checks: DiagnosticItem[] = [
     existsDir(config.workspaceRoot)
       ? item("workspace", "备课工作区", "ok", "工作区可访问。", config.workspaceRoot)
@@ -149,9 +151,9 @@ export function createDiagnostics(store: Store) {
       courses: store.data.courses.length,
       jobs: store.data.jobs.length,
       runningJobs: store.data.jobs.filter((job) => job.status === "running" || job.status === "queued").length,
-      materials: store.data.materials.length,
-      indexedMaterials: store.data.materials.filter((material) => material.status === "indexed").length,
-      ragChunks: store.data.ragChunks.length
+      materials: ragStats.materials,
+      indexedMaterials: ragStats.indexedMaterials,
+      ragChunks: ragStats.chunks
     },
     checks
   };

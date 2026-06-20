@@ -28,6 +28,13 @@ Formal lessons can still borrow the trial-lesson strengths: diagnostic opener, v
 8. Check the files for no fenced code blocks and correct math delimiters.
 9. Fixed final step: stop after the four local deliverables pass quality checks. The host service will sync them to Feishu with the current logged-in `lark-cli --as user` identity, create the calendar event when possible, and send the sync result message.
 
+## Mandatory Spoken Modules
+
+Every formal lesson script must contain:
+
+- `知识点对话（专业度+真题关联）` near the beginning. Connect today's knowledge point to verified 高考/地方卷/模考 appearances and explain why it matters for scoring. Use exact year, paper region, and question number when verified; mark frequency as `[待检索确认]` if not verified.
+- `课程总结（结束前2分钟）` at the end. Use the structure `学习内容`, `学生表现`, `待提升点`, `后续建议`. Before the actual class, keep performance details as `[课后填写]`; after class, make them specific and parent-facing. Include the next-lesson connection and the stage-by-stage plan.
+
 ## Knowledge Completeness Checklist
 
 Use this checklist before finalizing `知识点详解.md`:

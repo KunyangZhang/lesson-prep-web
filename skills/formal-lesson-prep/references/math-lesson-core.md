@@ -13,11 +13,39 @@ Create these user-facing files:
 
 Do not generate a student handout unless the user explicitly asks for one. Keep the classroom PDF concise; keep full reasoning in `老师逐字稿.md` and `知识点详解.md`.
 
+## Sub-Agent Delegation For Large Tasks
+
+For substantial lesson-prep tasks, the main agent must split work across sub-agents before assembling the final files. Use this default division:
+
+1. `题目提取`: extract and index questions from local files, screenshots, library materials, and web exam sources; record internal question IDs, topics, teaching roles, missing figures, and unclear text.
+2. `答案核对`: independently solve and verify selected questions; check every formula condition, calculation, diagram relation, and answer form.
+3. `课件生成`: create the Beamer classroom PDF from the verified sequence; keep pages student-facing, spacious, and aligned with the teacher script.
+4. `逐字稿和内容丰富`: expand the teacher script and content density after verification; add sufficient diagnostic, model, variant, consolidation, and homework material; write page-by-page teaching language, prompts, likely student responses, correction wording, and board notes.
+
+The main agent must integrate the sub-agent outputs, resolve conflicts, and run final QA. Do not use unchecked extracted questions, unverified answers, thin question sets, or outline-only teacher scripts in final deliverables.
+
+## Internal Working Files And Two-Stage Workflow
+
+Create these intermediate files under `_work/` for substantial lesson-prep jobs. They are internal QA artifacts, not user-facing deliverables:
+
+1. `_work/题目索引.md`: extracted local, library, screenshot, and web questions with internal IDs, topics, teaching roles, and missing information.
+2. `_work/候选题池.md`: shortlisted and rejected candidates, fit rationale, and whether a question is verified authentic exam, official exam, simulation/mock, local, adapted, or self-written.
+3. `_work/答案核对表.md`: independent solutions, final answers, condition checks, diagram checks, and unresolved doubts.
+4. `_work/课件页码映射.md`: classroom PDF page numbers mapped to visible `第X题` labels and teacher-script sections.
+5. `_work/内容丰富清单.md`: checks for sufficient diagnostic, model, guided practice, variants, consolidation, homework, prompts, and common-error coverage.
+
+Run preparation in two internal stages:
+
+1. Stage 1: finish question extraction, candidate pool, answer verification, and course skeleton.
+2. Stage 2: generate the classroom PDF, write and enrich the teacher script, complete the final four deliverables, and run QA.
+
+Do not start Stage 2 until the selected question sequence has passed answer verification, topic-fit review, and question-volume review for the class length.
+
 ### Local question PDF priority
 
-If the user provides a local PDF, screenshot set, DOCX, or other document containing lesson questions, those questions are the primary class material. Extract or visually inspect the file first, identify each question number exactly as it appears in the local document, and use those questions as the default classroom sequence. Library material and web exam questions may add scaffolding, variants, or homework, but they should not replace the provided local questions unless the reason is stated.
+If the user provides a local PDF, screenshot set, DOCX, or other document containing lesson questions, those questions are the primary class material. Extract or visually inspect the file first and use those questions as the default classroom sequence. Keep local page/question-number mappings internally in `_work/题目索引.md` or `_work/课件页码映射.md` when useful. Library material and web exam questions may add scaffolding, variants, or homework, but they should not replace the provided local questions unless there is a teaching reason.
 
-Every in-class problem in `课堂课件.pdf` must show a simple question label, for example `第5题`, not `本地PDF第5题`. Every matching section in `老师逐字稿.md` must include the local source label, such as `本地PDF第5题`, and the classroom PDF page number.
+Every in-class problem in `课堂课件.pdf` must show a simple question label, for example `第5题`, not `本地PDF第5题`. Every matching section in `老师逐字稿.md` must align to the classroom PDF page number and visible `第X题` label. The final user-facing files do not need to emphasize local PDF sources, page numbers, or original local question-number mappings.
 
 ## 2. Local Library And Web Research
 
@@ -44,8 +72,8 @@ If the root does not exist or contains no useful material, record that status an
 Search the student folder or user-specified folder for local PDFs, images, DOCX files, or other question documents before selecting lesson questions. For a local PDF with questions:
 
 - Extract text and embedded images/tables; visually inspect pages when extraction is incomplete.
-- Build a question index with local page number, local question number, topic, type, and any missing figures or tables.
-- Preserve local question numbers in teacher-facing artifacts. In the classroom PDF, display the simple label `第X题`; keep full provenance in `老师逐字稿.md` and `知识点详解.md`.
+- Build an internal question index with lesson sequence ID, topic, type, and any missing figures or tables. Keep local page/question numbers internally only when useful for verification.
+- In the classroom PDF, display the simple label `第X题`. In the teacher script, align to classroom page numbers and visible question labels; do not force local PDF source details into final user-facing files.
 - Use outside sources only to explain, scaffold, extend, or verify; keep local PDF questions as the visible lesson spine.
 
 ### Web research
@@ -59,14 +87,14 @@ Prioritize:
 3. Reputable education sites with complete, independently verifiable solutions.
 4. Creator explanations only as teaching inspiration after independent verification.
 
-For each selected question, record:
+For each selected authentic exam, official exam, or mock/simulation question, record reliable source information:
 
 - Year, region, exam name, paper type, and URL when available.
 - Knowledge point, question type, and teaching role.
 - Why it fits the current student and custom lesson ladder.
 - Whether the wording or figure was preserved, cropped, redrawn, or adapted.
 
-If provenance is uncertain, label it `[来源待核验]`. Never reconstruct a source label from memory.
+For local, adapted, or self-written questions, do not force a source label, but never call them `真题`, `官方考试题`, or `模拟题` unless that status is verified. If a claimed exam source is uncertain, label it `[来源待核验]`. Never reconstruct a source label from memory.
 
 ## 3. Dynamic Difficulty
 
@@ -102,14 +130,24 @@ For each layer, write:
 - A question-type taxonomy with recognition signals.
 - Method templates with conditions, thought process, steps, checks, and migration patterns.
 - Common misconceptions, typical wrong paths, correction language, and later-topic links.
-- Selected examples, authentic questions, full solutions, and sources.
+- Selected examples and authentic exam or mock/simulation questions with detailed solutions and reliable source labels when they are claimed as such. Local, adapted, or self-written questions do not need forced source labels, but must not be falsely labeled as authentic exam questions.
 - A final `知识点完整性检查`.
+
+## 4A. Content Richness Standard
+
+The final lesson must contain enough mathematical work for the requested class length. Do not stop at a few examples and a short outline.
+
+- For a standard 90-minute formal lesson, include complete question groups or micro-question groups: diagnostic questions, model examples, guided practice, independent variants, consolidation checks, and homework.
+- If local user-provided questions are few, supplement with same-type variants, prerequisite bridge questions, authentic exam-style extensions, and homework while keeping the local questions as the main spine.
+- Each question should have a clear teaching role and should either diagnose, model, practice, validate, extend, or assign post-class work.
+- `老师逐字稿.md` must be page-by-page and question-by-question, not a compressed solution bank. Include teacher wording, exact prompts, expected student responses, common mistakes, correction wording, board or annotation notes, and transitions.
+- If the lesson intentionally uses fewer questions, state the pedagogical reason and compensate with richer micro-variants, oral checks, and deeper explanation.
 
 ## 5. Per-Question Teacher Standard
 
 For every question used in class or homework, include enough detail for the teacher to teach from the file:
 
-1. `题目与来源`
+1. `题目与来源状态`
 2. `本题教学用途`
 3. `适配理由`
 4. `前置知识`
@@ -122,7 +160,6 @@ For every question used in class or homework, include enough detail for the teac
 11. `分层提示`
 12. `追问与变式`
 13. `课件页码`
-14. `本地PDF题号` when the question came from a provided local PDF or document
 
 Verify every calculation, proof, condition, and diagram independently. Do not include a shortcut without stating when it works and when it fails.
 
@@ -134,7 +171,7 @@ Use a strict no-jump explanation standard in `老师逐字稿.md`:
 - Every transition in spoken wording and every transformation in the solution must have a reason. Avoid vague jumps such as "显然", "容易得到", "直接可得", or "套公式" unless the missing reasoning is immediately written out.
 - If the student has not learned a prerequisite, insert a short teachable prerequisite block before using it, with teacher wording and a one-step check question.
 
-For questions that appear in the classroom PDF, place the full teacher script and detailed solution at the corresponding PDF page/question section, not only in an end-of-file solution bank. Add a trace map near the start of `老师逐字稿.md` in the form `课堂PDF页码 -> 本地PDF题号 -> 教学环节`.
+For questions that appear in the classroom PDF, place the full teacher script and detailed solution at the corresponding PDF page/question section, not only in an end-of-file solution bank. Add an alignment map near the start of `老师逐字稿.md` in the form `课堂PDF页码 -> 第X题 -> 教学环节`.
 
 ## 6. Classroom PDF Standard
 
@@ -144,7 +181,7 @@ Start from `assets/tablet-beamer-template.tex`. Copy it into the lesson working 
 
 ### Student-facing answer boundary
 
-Keep `课堂课件.pdf` for prompts, diagrams, method cues, light hints, and writable annotation space only. Do not include final answers, complete solution steps, answer-key pages, or teacher-only provenance in the classroom PDF unless the user explicitly requests answer reveals. Store those answers and full explanations in `老师逐字稿.md` and `知识点详解.md`.
+Keep `课堂课件.pdf` for prompts, diagrams, method cues, light hints, and writable annotation space only. Do not include final answers, complete solution steps, answer-key pages, or teacher-only source notes in the classroom PDF unless the user explicitly requests answer reveals. Store answers, checks, and full explanations in `老师逐字稿.md` and `知识点详解.md`.
 
 ### Layout
 
@@ -153,7 +190,7 @@ Keep `课堂课件.pdf` for prompts, diagrams, method cues, light hints, and wri
 - Leave substantial writable space on problem, discussion, and guided-practice pages.
 - Aim for roughly 40-60% writable blank area on pages where the student or teacher should write.
 - Keep one main teaching action per page.
-- Label each problem page with the question number. If it comes from a local question PDF, write `第X题` in the frame title or near the prompt, and keep `本地PDF第X题` only in teacher-facing trace maps.
+- Label each problem page with the question number. If it comes from a local question PDF, still write only `第X题` in the frame title or near the prompt.
 - Put detailed derivations in the Markdown files, not on the initial problem page.
 
 ### Reveal rhythm
@@ -185,7 +222,17 @@ Use image generation only for a genuinely necessary complex situational image, s
 - Check page count with PDF tooling.
 - Render representative pages to images and inspect them.
 - Verify font readability, blank writing areas, reveal order, clipping, and diagram accuracy.
-- Confirm the `第X题` labels in `课堂课件.pdf` match the local-PDF alignment map in `老师逐字稿.md`.
+- Confirm the `第X题` labels in `课堂课件.pdf` match the page/question alignment map in `老师逐字稿.md`.
+
+## 6A. Final QA Priorities
+
+Before finalization, prioritize these checks:
+
+- No skipped teaching steps in `老师逐字稿.md` or `知识点详解.md`.
+- A standard 90-minute formal lesson has enough complete question groups or micro-question groups: diagnostic, model, guided practice, independent variant, consolidation, and homework.
+- Every selected question has independently checked final answers and key reasoning; unresolved or possibly wrong answers are flagged before delivery.
+- Any question called `真题`, `官方考试题`, or `模拟题` has reliable source information. Local, adapted, or self-written questions are not mislabeled as authentic exam questions.
+- Local PDF or screenshot questions can be the lesson spine, but final user-facing files only need classroom page and visible `第X题` alignment, not local source/page/question-number mapping.
 
 ## 7. Post-Class Feedback Standard
 
@@ -214,5 +261,5 @@ For generated Markdown deliverables:
 - Do not write LaTeX formulas inside ordinary parentheses, such as `(\vec{a}=(2,-1))`.
 - Do not leave bare LaTeX commands in prose, such as `求 \vec{a}\cdot\vec{b}`; write `求 $\vec{a}\cdot\vec{b}$`.
 - Prefer braced vector notation, such as `\vec{a}` and `\vec{b}`.
-- Prefer source links.
+- Prefer source links for questions claimed as authentic exam, official exam, or mock/simulation questions.
 - Mark missing information as `[待确认]`, `[待检索]`, or `[来源待核验]`.

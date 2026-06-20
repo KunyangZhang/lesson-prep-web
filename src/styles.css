@@ -1136,6 +1136,14 @@ textarea:focus {
   gap: 12px;
 }
 
+.material-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .material-browser-header {
   min-height: 56px;
   padding: 10px 14px;
@@ -1158,16 +1166,30 @@ textarea:focus {
 
 .material-folder {
   width: 100%;
-  border: 0;
-  border-bottom: 1px solid var(--line);
   background: transparent;
   color: inherit;
   text-align: left;
-  padding: 13px 14px;
 }
 
 .material-folder:hover {
   background: var(--panel-soft);
+}
+
+.material-folder-open {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+}
+
+.material-folder-open span {
+  overflow-wrap: anywhere;
 }
 
 .viewer-page {
@@ -1271,4 +1293,113 @@ textarea:focus {
   justify-content: flex-end;
   gap: 9px;
   flex-wrap: wrap;
+}
+
+.resource-picker,
+.course-material-picker {
+  display: grid;
+  gap: 10px;
+}
+
+.resource-actions,
+.material-select-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+
+.resource-actions span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.material-select-row {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px 10px;
+}
+
+.material-select-row input {
+  flex: 1;
+  min-width: 160px;
+  border: 0;
+  outline: 0;
+  font: inherit;
+}
+
+.material-pick-list {
+  display: grid;
+  gap: 8px;
+}
+
+.material-pick-list button {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: inherit;
+  text-align: left;
+  padding: 10px 12px;
+}
+
+.material-pick-list button:hover:not(:disabled) {
+  background: var(--panel-soft);
+}
+
+.material-pick-list strong,
+.material-pick-list small {
+  overflow-wrap: anywhere;
+}
+
+.material-pick-list small,
+.result-reason {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.material-pick-list.compact {
+  max-height: 260px;
+  overflow: auto;
+}
+
+.selected-materials,
+.reindex-status,
+.doc-notice {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px 12px;
+}
+
+.selected-material-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.selected-material-row span,
+.reindex-status small {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.reindex-status progress {
+  width: 100%;
+  height: 8px;
+}
+
+.doc-notice {
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 12px;
 }

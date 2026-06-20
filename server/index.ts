@@ -1,6 +1,8 @@
 import express from "express";
 import fs from "node:fs";
 import path from "node:path";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import multer from "multer";
 import type { NextFunction, Request, Response } from "express";
 import {
@@ -19,7 +21,17 @@ import { assertWithinWorkspace, listCourseFiles, uniqueDestination } from "./fil
 import { onJobFinished } from "./jobEvents.js";
 import { cancelCodexJob, createCodexJob, recoverInterruptedJobs, runCodexJob } from "./jobs.js";
 import { assessCourseQuality } from "./quality.js";
-import { indexMaterialFile, reindexMaterialRoot, searchRag } from "./rag.js";
+import {
+  clearRagIndexCache,
+  deleteMaterialFile,
+  deleteMaterialFolder,
+  getRagStats,
+  indexMaterialFile,
+  listMaterialFilesNeedingIndex,
+  markMaterialIndexFailed,
+  registerMaterialFile,
+  searchRag
+} from "./rag.js";
 import { authRateLimit, clearAuthRateLimit, securityHeaders } from "./security.js";
 import { Store, newId, nowIso, publicCourse, safeRelativeUploadPath, sanitizeFilename } from "./store.js";
 import type { Course, CourseType, Student } from "./types.js";
@@ -28,6 +40,9 @@ ensureAppDirs();
 
 const store = new Store();
 recoverInterruptedJobs(store);
+const currentFile = fileURLToPath(import.meta.url);
+const serverDir = path.dirname(currentFile);
+const ragWorkerPath = path.join(serverDir, "rag-worker.js");
 
 const app = express();
 if (config.trustProxy) app.set("trust proxy", 1);
@@ -122,13 +137,132 @@ function courseHasActiveJob(course: Course) {
   return job?.status === "running" || job?.status === "queued";
 }
 
+function appendCourseLocalFiles(course: Course, paths: string[]) {
+  const existing = new Set(
+    course.localFiles
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+  );
+  for (const filePath of paths) {
+    if (filePath.trim()) existing.add(filePath.trim());
+  }
+  course.localFiles = [...existing].join("\n");
+  course.updatedAt = nowIso();
+}
+
+function removeCourseLocalFiles(course: Course, paths: string[]) {
+  const removing = new Set(paths.map((item) => item.trim()).filter(Boolean));
+  course.localFiles = course.localFiles
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter((item) => item && !removing.has(item))
+    .join("\n");
+  course.updatedAt = nowIso();
+}
+
+const ragReindexJob = {
+  status: "idle" as "idle" | "running" | "completed" | "failed",
+  total: 0,
+  processed: 0,
+  current: "",
+  indexed: 0,
+  error: "",
+  startedAt: "",
+  endedAt: ""
+};
+
+function publicRagReindexJob() {
+  return { ...ragReindexJob };
+}
+
+function runRagWorker(filePath: string) {
+  return new Promise<{ ok: boolean; error?: string }>((resolve) => {
+    const child = spawn(process.execPath, ["--max-old-space-size=192", ragWorkerPath, filePath], {
+      cwd: config.projectRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 4000) stderr = stderr.slice(-4000);
+    });
+    child.on("error", (error) => {
+      resolve({ ok: false, error: error.message });
+    });
+    child.on("close", (code, signal) => {
+      if (code === 0) {
+        resolve({ ok: true });
+        return;
+      }
+      const detail = stderr.trim();
+      resolve({
+        ok: false,
+        error: `worker ${signal ? `signal ${signal}` : `exit ${code ?? "unknown"}`}${detail ? `: ${detail}` : ""}`
+      });
+    });
+  });
+}
+
+async function startRagReindexJob() {
+  if (ragReindexJob.status === "running") return;
+  Object.assign(ragReindexJob, {
+    status: "running",
+    total: 0,
+    processed: 0,
+    current: "",
+    indexed: 0,
+    error: "",
+    startedAt: nowIso(),
+    endedAt: ""
+  });
+  try {
+    store.reload();
+    clearRagIndexCache();
+    const candidates = listMaterialFilesNeedingIndex(store, path.join(config.workspaceRoot, "资料库"));
+    ragReindexJob.total = candidates.length;
+    const failures: string[] = [];
+    for (const filePath of candidates) {
+      ragReindexJob.current = filePath;
+      const result = await runRagWorker(filePath);
+      store.reload();
+      clearRagIndexCache();
+      ragReindexJob.processed += 1;
+      if (result.ok) {
+        ragReindexJob.indexed += 1;
+      } else {
+        const error = result.error || "索引进程失败";
+        try {
+          markMaterialIndexFailed(store, filePath, error);
+          store.reload();
+          clearRagIndexCache();
+        } catch {
+          // Keep the indexing job moving even if recording the failed file fails.
+        }
+        failures.push(`${path.basename(filePath)}: ${error}`);
+      }
+    }
+    ragReindexJob.error = failures.length > 0 ? `${failures.length} 个文件索引失败：${failures.slice(0, 3).join("；")}` : "";
+    ragReindexJob.status = "completed";
+    ragReindexJob.endedAt = nowIso();
+  } catch (error) {
+    ragReindexJob.status = "failed";
+    ragReindexJob.error = error instanceof Error ? error.message : String(error);
+    ragReindexJob.endedAt = nowIso();
+  } finally {
+    ragReindexJob.current = "";
+  }
+}
+
 app.get("/api/system", (req, res) => {
+  const ragStats = getRagStats(store);
   res.json({
     setupRequired: store.data.users.length === 0,
     workspaceRoot: config.workspaceRoot,
     codexAutoRun: config.codexAutoRun,
     codexRunner: config.codexRunner,
-    ragChunkCount: store.data.ragChunks.length
+    ragChunkCount: ragStats.chunks
   });
 });
 
@@ -487,13 +621,50 @@ app.post(
       await fs.promises.rename(file.path, destination);
       saved.push(destination);
     }
-    const appended = saved.join("\n");
-    course.localFiles = [course.localFiles, appended].filter(Boolean).join("\n");
-    course.updatedAt = nowIso();
+    appendCourseLocalFiles(course, saved);
     store.save();
     res.json({ files: saved, course: publicCourse(course) });
   })
 );
+
+app.post("/api/courses/:courseId/materials/select", requireAuth, (req, res) => {
+  const course = store.findCourse(routeParam(req, "courseId"));
+  if (!course) {
+    res.status(404).json({ error: "Course not found." });
+    return;
+  }
+  if (courseHasActiveJob(course)) {
+    res.status(409).json({ error: "该课程正在生成，暂时不能修改资料选择。" });
+    return;
+  }
+  const rawPaths: unknown[] = Array.isArray(req.body.paths) ? req.body.paths : [];
+  const selected = rawPaths
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean)
+    .map((value) => assertWithinWorkspace(value));
+  appendCourseLocalFiles(course, selected);
+  store.save();
+  res.json({ course: publicCourse(course), selected });
+});
+
+app.post("/api/courses/:courseId/materials/remove", requireAuth, (req, res) => {
+  const course = store.findCourse(routeParam(req, "courseId"));
+  if (!course) {
+    res.status(404).json({ error: "Course not found." });
+    return;
+  }
+  if (courseHasActiveJob(course)) {
+    res.status(409).json({ error: "该课程正在生成，暂时不能修改资料选择。" });
+    return;
+  }
+  const rawPaths: unknown[] = Array.isArray(req.body.paths) ? req.body.paths : [];
+  const selected = rawPaths
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean);
+  removeCourseLocalFiles(course, selected);
+  store.save();
+  res.json({ course: publicCourse(course), removed: selected });
+});
 
 app.get("/api/courses/:courseId/files", requireAuth, (req, res) => {
   const course = store.findCourse(routeParam(req, "courseId"));
@@ -568,9 +739,11 @@ app.get("/api/files/raw", requireAuth, (req, res) => {
 });
 
 app.get("/api/materials", requireAuth, (req, res) => {
+  const ragStats = getRagStats(store);
   res.json({
     materials: store.data.materials.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
-    chunkCount: store.data.ragChunks.length,
+    chunkCount: ragStats.chunks,
+    stats: ragStats,
     uploadRoot
   });
 });
@@ -586,9 +759,10 @@ app.post(
     for (const file of files) {
       const destination = uniqueNestedDestination(uploadRoot, file.originalname);
       await fs.promises.rename(file.path, destination);
-      materials.push(await indexMaterialFile(store, destination, file.mimetype));
+      materials.push(registerMaterialFile(store, destination, file.mimetype));
     }
-    res.json({ materials, chunkCount: store.data.ragChunks.length });
+    const ragStats = getRagStats(store);
+    res.json({ materials, queued: materials.length, chunkCount: ragStats.chunks, stats: ragStats, job: publicRagReindexJob() });
   })
 );
 
@@ -596,8 +770,52 @@ app.post(
   "/api/materials/reindex",
   requireAuth,
   asyncHandler(async (req, res) => {
-    const materials = await reindexMaterialRoot(store);
-    res.json({ indexed: materials.length, chunkCount: store.data.ragChunks.length });
+    if (ragReindexJob.status !== "running") {
+      void startRagReindexJob();
+    }
+    res.json({ job: publicRagReindexJob(), stats: getRagStats(store) });
+  })
+);
+
+app.get("/api/materials/reindex", requireAuth, (req, res) => {
+  res.json({ job: publicRagReindexJob(), stats: getRagStats(store) });
+});
+
+app.get("/api/materials/convert-doc", requireAuth, (req, res) => {
+  const docMaterials = store.data.materials.filter((material) => material.status === "needs_conversion" || material.path.toLowerCase().endsWith(".doc"));
+  res.json({
+    count: docMaterials.length,
+    materials: docMaterials,
+    message: "旧版 .doc 暂不在服务器内自动转换。请用 Word/WPS/LibreOffice 批量另存为 .docx，然后回到资料库点击一键索引全库。"
+  });
+});
+
+app.delete(
+  "/api/materials/folder",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const folderPath = requiredString(req.query.path);
+    const deleted = await deleteMaterialFolder(store, folderPath);
+    if (!deleted) {
+      res.status(404).json({ error: "Folder not found." });
+      return;
+    }
+    const ragStats = getRagStats(store);
+    res.json({ deleted, chunkCount: ragStats.chunks, stats: ragStats });
+  })
+);
+
+app.delete(
+  "/api/materials/:materialId",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const deleted = await deleteMaterialFile(store, routeParam(req, "materialId"));
+    if (!deleted) {
+      res.status(404).json({ error: "Material not found." });
+      return;
+    }
+    const ragStats = getRagStats(store);
+    res.json({ deleted, chunkCount: ragStats.chunks, stats: ragStats });
   })
 );
 

@@ -60,6 +60,8 @@ export const config = {
   codexRemoteProjectRoot: process.env.CODEX_REMOTE_PROJECT_ROOT || "",
   codexRemoteCommand: process.env.CODEX_REMOTE_COMMAND || process.env.CODEX_COMMAND || "codex",
   ragMaxReindexFiles: Number(process.env.RAG_MAX_REINDEX_FILES || 300),
+  ragReindexBatchSize: Number(process.env.RAG_REINDEX_BATCH_SIZE || 10),
+  ragMaxParseBytes: Number(process.env.RAG_MAX_PARSE_BYTES || 2 * 1024 * 1024),
   maxUploadFiles: Number(process.env.MAX_UPLOAD_FILES || 5000),
   trustProxy: optionalBoolean(process.env.TRUST_PROXY, false),
   secureCookies: optionalBoolean(process.env.SECURE_COOKIES, process.env.NODE_ENV === "production"),

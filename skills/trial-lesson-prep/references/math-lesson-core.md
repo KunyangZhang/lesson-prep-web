@@ -13,6 +13,34 @@ Create these user-facing files:
 
 Do not generate a student handout unless the user explicitly asks for one. Keep the classroom PDF concise; keep full reasoning in `老师逐字稿.md` and `知识点详解.md`.
 
+## Sub-Agent Delegation For Large Tasks
+
+For substantial lesson-prep tasks, the main agent must split work across sub-agents before assembling the final files. Use this default division:
+
+1. `题目提取`: extract and index questions from local files, screenshots, library materials, and web exam sources; record internal question IDs, topics, teaching roles, missing figures, and unclear text.
+2. `答案核对`: independently solve and verify selected questions; check every formula condition, calculation, diagram relation, and answer form.
+3. `课件生成`: create the Beamer classroom PDF from the verified sequence; keep pages student-facing, spacious, and aligned with the teacher script.
+4. `逐字稿和内容丰富`: expand the teacher script and content density after verification; add sufficient diagnostic, model, same-type validation, variant, authentic-style, and homework material; write page-by-page teaching language, prompts, likely student responses, correction wording, board notes, and `大招/爽感` moments.
+
+The main agent must integrate the sub-agent outputs, resolve conflicts, and run final QA. Do not use unchecked extracted questions, unverified answers, thin question sets, or outline-only teacher scripts in final deliverables.
+
+## Internal Working Files And Two-Stage Workflow
+
+Create these intermediate files under `_work/` for substantial lesson-prep jobs. They are internal QA artifacts, not user-facing deliverables:
+
+1. `_work/题目索引.md`: extracted local, library, screenshot, and web questions with internal IDs, topics, teaching roles, and missing information.
+2. `_work/候选题池.md`: shortlisted and rejected candidates, fit rationale, and whether a question is verified authentic exam, official exam, simulation/mock, local, adapted, or self-written.
+3. `_work/答案核对表.md`: independent solutions, final answers, condition checks, diagram checks, and unresolved doubts.
+4. `_work/课件页码映射.md`: classroom PDF page numbers mapped to visible `第X题` labels and teacher-script sections.
+5. `_work/内容丰富清单.md`: checks for sufficient diagnosis, model, same-type validation, variant/authentic-style, homework, prompts, and common-error coverage.
+
+Run preparation in two internal stages:
+
+1. Stage 1: finish question extraction, candidate pool, answer verification, and visible-gain course skeleton.
+2. Stage 2: generate the classroom PDF, write and enrich the teacher script, complete the final four deliverables, and run QA.
+
+Do not start Stage 2 until the selected question sequence has passed answer verification, topic-fit review, visible-gain review, and question-volume review for the class length.
+
 ## 2. Local Library And Web Research
 
 Use local and web sources concurrently.
@@ -44,14 +72,14 @@ Prioritize:
 3. Reputable education sites with complete, independently verifiable solutions.
 4. Creator explanations only as teaching inspiration after independent verification.
 
-For each selected question, record:
+For each selected authentic exam, official exam, or mock/simulation question, record reliable source information:
 
 - Year, region, exam name, paper type, and URL when available.
 - Knowledge point, question type, and teaching role.
 - Why it fits the current student and custom lesson ladder.
 - Whether the wording or figure was preserved, cropped, redrawn, or adapted.
 
-If provenance is uncertain, label it `[来源待核验]`. Never reconstruct a source label from memory.
+For local, adapted, or self-written questions, do not force a source label, but never call them `真题`, `官方考试题`, or `模拟题` unless that status is verified. If a claimed exam source is uncertain, label it `[来源待核验]`. Never reconstruct a source label from memory.
 
 ## 3. Dynamic Difficulty
 
@@ -95,14 +123,24 @@ For trial lessons, the ladder must support a visible gain. At least one layer sh
 - A question-type taxonomy with recognition signals.
 - Method templates with conditions, thought process, steps, checks, and migration patterns.
 - Common misconceptions, typical wrong paths, correction language, and later-topic links.
-- Selected examples, authentic questions, full solutions, and sources.
+- Selected examples and authentic exam or mock/simulation questions with detailed solutions and reliable source labels when they are claimed as such. Local, adapted, or self-written questions do not need forced source labels, but must not be falsely labeled as authentic exam questions.
 - A final `知识点完整性检查`.
+
+## 4A. Content Richness Standard
+
+The final lesson must contain enough mathematical work for the requested class length and visible-gain design. Do not stop at a few examples and a short outline.
+
+- For a 40-60 minute trial lesson, include at minimum a diagnostic/trap question, one model question, one guided same-type question, one independent validation question, one variant or authentic exam-style question, and homework or next-step practice.
+- If local user-provided questions are few, supplement with same-type variants, prerequisite bridge questions, authentic exam-style extensions, and homework while keeping the local questions as the main spine.
+- Each question should have a clear teaching role and should either diagnose, expose the bottleneck, model the method, let the student prove the gain, extend, or assign post-class work.
+- `老师逐字稿.md` must be page-by-page and question-by-question, not a compressed solution bank. Include teacher wording, exact prompts, expected student responses, common mistakes, correction wording, board or annotation notes, visible-gain transitions, and parent-facing summary cues.
+- If the lesson intentionally uses fewer questions, state the pedagogical reason and compensate with richer micro-variants, oral checks, and deeper explanation.
 
 ## 5. Per-Question Teacher Standard
 
 For every question used in class or homework, include enough detail for the teacher to teach from the file:
 
-1. `题目与来源`
+1. `题目与来源状态`
 2. `本题教学用途`
 3. `适配理由`
 4. `前置知识`
@@ -126,6 +164,8 @@ Use a strict no-jump explanation standard in `老师逐字稿.md`:
 - Every transition in spoken wording and every transformation in the solution must have a reason. Avoid vague jumps such as "显然", "容易得到", "直接可得", or "套公式" unless the missing reasoning is immediately written out.
 - If the student has not learned a prerequisite, insert a short teachable prerequisite block before using it, with teacher wording and a one-step check question.
 
+For questions that appear in the classroom PDF, place the full teacher script and detailed solution at the corresponding PDF page/question section, not only in an end-of-file solution bank. Add an alignment map near the start of `老师逐字稿.md` in the form `课堂PDF页码 -> 第X题 -> 教学环节`.
+
 ## 6. Classroom PDF Standard
 
 Generate `课堂课件.pdf` from LaTeX Beamer for tablet annotation.
@@ -140,7 +180,7 @@ Start from `assets/tablet-beamer-template.tex`. Copy it into the lesson working 
 - Aim for roughly 40-60% writable blank area on pages where the student or teacher should write.
 - Keep one main teaching action per page.
 - Put detailed derivations in the Markdown files, not on the initial problem page.
-- For local PDF questions, use student-facing labels such as `第X题` on the classroom PDF; keep source/provenance details in the teacher script.
+- For local PDF questions, use student-facing labels such as `第X题` on the classroom PDF. Keep local page/question-number mappings in `_work/题目索引.md` or `_work/课件页码映射.md` when useful; do not force local source details into final user-facing files.
 
 ### Reveal rhythm
 
@@ -171,6 +211,17 @@ Use image generation only for a genuinely necessary complex situational image, s
 - Check page count with PDF tooling.
 - Render representative pages to images and inspect them.
 - Verify font readability, blank writing areas, reveal order, clipping, and diagram accuracy.
+- Confirm the `第X题` labels in `课堂课件.pdf` match the page/question alignment map in `老师逐字稿.md`.
+
+## 6A. Final QA Priorities
+
+Before finalization, prioritize these checks:
+
+- No skipped teaching steps in `老师逐字稿.md` or `知识点详解.md`.
+- A 40-60 minute trial lesson has at least diagnostic/trap, model, guided same-type, independent validation, variant or authentic-style, and homework/next-step practice components.
+- Every selected question has independently checked final answers and key reasoning; unresolved or possibly wrong answers are flagged before delivery.
+- Any question called `真题`, `官方考试题`, or `模拟题` has reliable source information. Local, adapted, or self-written questions are not mislabeled as authentic exam questions.
+- Local PDF or screenshot questions can be the lesson spine, but final user-facing files only need classroom page and visible `第X题` alignment, not local source/page/question-number mapping.
 
 ## 7. Post-Class Feedback Standard
 
@@ -199,5 +250,5 @@ For generated Markdown deliverables:
 - Do not write LaTeX formulas inside ordinary parentheses, such as `(\vec{a}=(2,-1))`.
 - Do not leave bare LaTeX commands in prose, such as `求 \vec{a}\cdot\vec{b}`; write `求 $\vec{a}\cdot\vec{b}$`.
 - Prefer braced vector notation, such as `\vec{a}` and `\vec{b}`.
-- Prefer source links.
+- Prefer source links for questions claimed as authentic exam, official exam, or mock/simulation questions.
 - Mark missing information as `[待确认]`, `[待检索]`, or `[来源待核验]`.

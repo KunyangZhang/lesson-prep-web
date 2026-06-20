@@ -22,6 +22,10 @@ export class Store {
     this.data = this.load();
   }
 
+  reload() {
+    this.data = this.load();
+  }
+
   save() {
     fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
     const tmpPath = `${this.dbPath}.${process.pid}.tmp`;

@@ -161,6 +161,13 @@ Use the searched material in the 40-minute lesson like this:
 - Board screenshot: preserve the original attempt, method, and variant answer.
 - Next lesson hook: "今天只讲了这个题型最关键的一步，下次可以把这一类题完整整理成模板。"
 
+## Mandatory Spoken Modules
+
+Every trial lesson script must contain:
+
+- `知识点对话（专业度+真题关联）` near the beginning. Connect today's knowledge point to verified 高考/地方卷/模考 appearances and explain why it matters for scoring. Use exact year, paper region, and question number when verified; mark frequency as `[待检索确认]` if not verified.
+- `课程总结（结束前2分钟）` at the end. Use the structure `学习内容`, `学生表现`, `待提升点`, `后续建议`. Before the actual class, keep performance details as `[课后填写]`; after class, make them specific and parent-facing.
+
 ## Student Tactic Examples
 
 Do not classify solely by score. Use these examples only when they match the student's evidence.

@@ -14,6 +14,7 @@ import {
   Download,
   ArrowLeft,
   ExternalLink,
+  Image,
   FileText,
   FolderUp,
   FolderOpen,
@@ -36,7 +37,7 @@ import {
   UserRound
 } from "lucide-react";
 import { api } from "./api";
-import type { Course, CourseFile, Diagnostics, DiagnosticStatus, Job, Material, RagSearchResult, Student, SystemInfo, User } from "./types";
+import type { Course, CourseFile, Diagnostics, DiagnosticStatus, Job, Material, RagReindexJob, RagSearchResult, Student, SystemInfo, User } from "./types";
 
 type View = "students" | "materials";
 
@@ -234,6 +235,37 @@ function appendUploadFiles(formData: FormData, files: FileList) {
     const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath;
     formData.append("files", file, relativePath || file.name);
   });
+}
+
+function appendUploadFileArray(formData: FormData, files: File[]) {
+  files.forEach((file) => {
+    const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath;
+    formData.append("files", file, relativePath || file.name);
+  });
+}
+
+function appendPathsText(current: string, paths: string[]) {
+  const items = new Set(
+    current
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+  );
+  paths.forEach((item) => {
+    if (item.trim()) items.add(item.trim());
+  });
+  return [...items].join("\n");
+}
+
+function splitLocalFiles(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function localFileLabel(value: string) {
+  return decodeURIComponent(value.split(/[\\/]/).filter(Boolean).pop() || value);
 }
 
 export default function App() {
@@ -1027,17 +1059,59 @@ function CourseForm({
 }) {
   const [form, setForm] = useState({ ...emptyCourseForm, stage: student.stage || emptyCourseForm.stage });
   const [submitting, setSubmitting] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [materialQuery, setMaterialQuery] = useState("");
+  const [materialResults, setMaterialResults] = useState<RagSearchResult[]>([]);
+  const [searchingMaterials, setSearchingMaterials] = useState(false);
 
   function update(name: string, value: string | number | boolean) {
     setForm((current) => ({ ...current, [name]: value }));
+  }
+
+  function addPendingFiles(files: FileList | null) {
+    if (!files?.length) return;
+    setPendingFiles((current) => [...current, ...Array.from(files)]);
+  }
+
+  function addMaterialPath(pathValue: string) {
+    setForm((current) => ({ ...current, localFiles: appendPathsText(current.localFiles, [pathValue]) }));
+  }
+
+  async function searchMaterials() {
+    if (!materialQuery.trim()) {
+      setMaterialResults([]);
+      return;
+    }
+    setSearchingMaterials(true);
+    try {
+      const data = await api.get<{ results: RagSearchResult[] }>(`/api/materials/search?q=${encodeURIComponent(materialQuery)}`);
+      setMaterialResults(data.results);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSearchingMaterials(false);
+    }
   }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setSubmitting(true);
     try {
-      const data = await api.post<{ course: Course }>(`/api/students/${student.id}/courses`, form);
-      onCreated(data.course);
+      const shouldRunAfterUpload = form.autoRun && pendingFiles.length > 0;
+      const createPayload = shouldRunAfterUpload ? { ...form, autoRun: false } : form;
+      const data = await api.post<{ course: Course }>(`/api/students/${student.id}/courses`, createPayload);
+      let course = data.course;
+      if (pendingFiles.length > 0) {
+        const formData = new FormData();
+        pendingFiles.forEach((file) => formData.append("files", file, file.name));
+        const uploadData = await api.post<{ course: Course }>(`/api/courses/${course.id}/attachments`, formData);
+        course = uploadData.course;
+      }
+      if (shouldRunAfterUpload) {
+        const runData = await api.post<{ course: Course; job: Job }>(`/api/courses/${course.id}/run`);
+        course = runData.course;
+      }
+      onCreated(course);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1129,6 +1203,64 @@ function CourseForm({
           rows={2}
         />
       </label>
+      <section className="resource-picker">
+        <div className="resource-actions">
+          <label className="ghost-button file-button">
+            <Upload size={16} />
+            上传本地文件
+            <input
+              type="file"
+              multiple
+              onChange={(event) => {
+                addPendingFiles(event.target.files);
+                event.target.value = "";
+              }}
+            />
+          </label>
+          <label className="ghost-button file-button">
+            <Image size={16} />
+            上传图片
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={(event) => {
+                addPendingFiles(event.target.files);
+                event.target.value = "";
+              }}
+            />
+          </label>
+          <span>{pendingFiles.length > 0 ? `${pendingFiles.length} 个文件待上传` : "文件会在创建课程后保存到课程目录"}</span>
+        </div>
+        <div className="material-select-row">
+          <Search size={16} />
+          <input
+            value={materialQuery}
+            onChange={(event) => setMaterialQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                searchMaterials();
+              }
+            }}
+            placeholder="搜索资料库后手动加入课程"
+          />
+          <button type="button" className="ghost-button" onClick={searchMaterials} disabled={searchingMaterials}>
+            {searchingMaterials ? <Loader2 className="spin" size={16} /> : <Search size={16} />}
+            搜索
+          </button>
+        </div>
+        {materialResults.length > 0 ? (
+          <div className="material-pick-list">
+            {materialResults.slice(0, 6).map((result) => (
+              <button type="button" key={result.material.path} onClick={() => addMaterialPath(result.material.path)}>
+                <strong>{result.material.title}</strong>
+                <small>{result.reason}</small>
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </section>
       <label>
         备注
         <textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} rows={2} />
@@ -1324,6 +1456,9 @@ function CourseDetail({
   const [editing, setEditing] = useState(false);
   const [refineInstruction, setRefineInstruction] = useState("");
   const [refining, setRefining] = useState(false);
+  const [materialQuery, setMaterialQuery] = useState("");
+  const [materialResults, setMaterialResults] = useState<RagSearchResult[]>([]);
+  const [searchingMaterials, setSearchingMaterials] = useState(false);
 
   const selectedFile = files.find((file) => file.path === selectedPath) || files[0] || null;
 
@@ -1364,6 +1499,8 @@ function CourseDetail({
     setManualQuality(null);
     setEditing(false);
     setRefineInstruction("");
+    setMaterialQuery("");
+    setMaterialResults([]);
     loadFiles().catch((err) => onError(err.message));
     loadJob().catch((err) => onError(err.message));
     loadJobs().catch((err) => onError(err.message));
@@ -1425,6 +1562,42 @@ function CourseDetail({
     }
   }
 
+  async function searchCourseMaterials() {
+    if (!materialQuery.trim()) {
+      setMaterialResults([]);
+      return;
+    }
+    setSearchingMaterials(true);
+    try {
+      const data = await api.get<{ results: RagSearchResult[] }>(`/api/materials/search?q=${encodeURIComponent(materialQuery)}`);
+      setMaterialResults(data.results);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSearchingMaterials(false);
+    }
+  }
+
+  async function selectCourseMaterial(pathValue: string) {
+    if (!course) return;
+    try {
+      await api.post(`/api/courses/${course.id}/materials/select`, { paths: [pathValue] });
+      await onRefresh();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function removeCourseMaterial(pathValue: string) {
+    if (!course) return;
+    try {
+      await api.post(`/api/courses/${course.id}/materials/remove`, { paths: [pathValue] });
+      await onRefresh();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function refineCourse(event: React.FormEvent) {
     event.preventDefault();
     if (!course) return;
@@ -1475,6 +1648,7 @@ function CourseDetail({
   }
 
   const currentQuality = job?.quality || manualQuality;
+  const selectedMaterials = splitLocalFiles(course.localFiles);
 
   return (
     <section className="detail-panel">
@@ -1539,9 +1713,62 @@ function CourseDetail({
           </div>
           <label className="upload-line">
             <Upload size={16} />
-            上传题目文件
+            上传本地文件/图片
             <input type="file" multiple onChange={uploadAttachments} />
           </label>
+          <div className="course-material-picker">
+            <div className="material-select-row">
+              <Search size={16} />
+              <input
+                value={materialQuery}
+                onChange={(event) => setMaterialQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    searchCourseMaterials();
+                  }
+                }}
+                placeholder="搜索资料库并加入本课"
+              />
+              <button type="button" className="ghost-button" disabled={searchingMaterials || polling} onClick={searchCourseMaterials}>
+                {searchingMaterials ? <Loader2 className="spin" size={16} /> : <Search size={16} />}
+              </button>
+            </div>
+            {materialResults.length > 0 ? (
+              <div className="material-pick-list compact">
+                {materialResults.slice(0, 5).map((result) => (
+                  <button
+                    type="button"
+                    key={result.material.path}
+                    disabled={polling}
+                    onClick={() => selectCourseMaterial(result.material.path)}
+                  >
+                    <strong>{result.material.title}</strong>
+                    <small>{result.reason}</small>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          {selectedMaterials.length > 0 ? (
+            <div className="selected-materials">
+              <strong>已选资料</strong>
+              {selectedMaterials.map((item) => (
+                <div key={item} className="selected-material-row">
+                  <span title={item}>{localFileLabel(item)}</span>
+                  <button
+                    className="icon-button danger-icon"
+                    disabled={polling}
+                    title="移除"
+                    aria-label="移除已选资料"
+                    onClick={() => removeCourseMaterial(item)}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <div className="file-list">
             {files.length === 0 ? (
               <div className="quiet-empty">等待生成文件</div>
@@ -1725,6 +1952,9 @@ function FilePreview({ file }: { file: CourseFile | null }) {
 function MaterialsView({ system, onError }: { system: SystemInfo | null; onError: (message: string) => void }) {
   const [materials, setMaterials] = useState<Material[]>([]);
   const [chunkCount, setChunkCount] = useState(system?.ragChunkCount || 0);
+  const [reindexJob, setReindexJob] = useState<RagReindexJob | null>(null);
+  const [docNotice, setDocNotice] = useState("");
+  const [uploadNotice, setUploadNotice] = useState("");
   const [uploadRoot, setUploadRoot] = useState("");
   const [currentPath, setCurrentPath] = useState("");
   const [query, setQuery] = useState("");
@@ -1742,6 +1972,20 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
     loadMaterials().catch((err) => onError(err.message));
   }, [loadMaterials, onError]);
 
+  useInterval(
+    () => {
+      api
+        .get<{ job: RagReindexJob; stats: { chunks: number } }>("/api/materials/reindex")
+        .then((data) => {
+          setReindexJob(data.job);
+          setChunkCount(data.stats.chunks);
+          if (data.job.status === "completed" || data.job.status === "failed") loadMaterials().catch((err) => onError(err.message));
+        })
+        .catch((err) => onError(err.message));
+    },
+    reindexJob?.status === "running" ? 1500 : null
+  );
+
   const search = useCallback(async () => {
     if (!query.trim()) {
       setResults([]);
@@ -1754,11 +1998,19 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
   async function upload(event: React.ChangeEvent<HTMLInputElement>) {
     const files = event.target.files;
     if (!files?.length) return;
-    const formData = new FormData();
-    appendUploadFiles(formData, files);
+    const allFiles = Array.from(files);
+    const batchSize = 20;
     setBusy(true);
     try {
-      await api.post("/api/materials/upload", formData);
+      for (let start = 0; start < allFiles.length; start += batchSize) {
+        const batch = allFiles.slice(start, start + batchSize);
+        const formData = new FormData();
+        appendUploadFileArray(formData, batch);
+        setUploadNotice(`正在上传 ${Math.min(start + batch.length, allFiles.length)}/${allFiles.length}`);
+        const data = await api.post<{ job: RagReindexJob }>("/api/materials/upload", formData);
+        setReindexJob(data.job);
+      }
+      setUploadNotice(`已上传 ${allFiles.length} 个文件，已保存为待索引。需要检索这些新资料时，请点击“一键索引全库”。`);
       await loadMaterials();
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -1771,7 +2023,48 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
   async function reindex() {
     setBusy(true);
     try {
-      await api.post("/api/materials/reindex");
+      const data = await api.post<{ job: RagReindexJob; stats: { chunks: number } }>("/api/materials/reindex");
+      setReindexJob(data.job);
+      setChunkCount(data.stats.chunks);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function showDocConversionNotice() {
+    try {
+      const data = await api.get<{ count: number; message: string }>("/api/materials/convert-doc");
+      setDocNotice(`${data.message}${data.count > 0 ? ` 当前有 ${data.count} 个 .doc 文件需要转换。` : " 当前没有待转换 .doc 文件。"}`);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function deleteMaterial(material: Material) {
+    if (!window.confirm(`删除资料「${material.title}」？这会同时删除文件和 RAG 索引。`)) return;
+    setBusy(true);
+    try {
+      const data = await api.del<{ chunkCount: number }>(`/api/materials/${material.id}`);
+      setChunkCount(data.chunkCount);
+      setResults((current) => current.filter((result) => result.material.id !== material.id));
+      await loadMaterials();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteMaterialFolder(entry: Extract<MaterialBrowserEntry, { kind: "folder" }>) {
+    if (!window.confirm(`删除文件夹「${entry.name}」及其中 ${entry.count} 个资料文件？这会同时删除文件和 RAG 索引。`)) return;
+    setBusy(true);
+    try {
+      const data = await api.del<{ chunkCount: number }>(`/api/materials/folder?path=${encodeURIComponent(entry.path)}`);
+      setChunkCount(data.chunkCount);
+      setResults((current) => current.filter((result) => !materialRelativePath(result.material, uploadRoot).startsWith(`${entry.path}/`)));
+      if (currentPath === entry.path || currentPath.startsWith(`${entry.path}/`)) setCurrentPath(parentMaterialPath(entry.path));
       await loadMaterials();
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -1794,7 +2087,11 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
         <div className="header-actions">
           <button className="ghost-button" onClick={reindex} disabled={busy}>
             {busy ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
-            重建索引
+            一键索引全库
+          </button>
+          <button className="ghost-button" onClick={showDocConversionNotice}>
+            <FileText size={16} />
+            .doc 转换
           </button>
           <label className="primary-button file-button">
             <Upload size={17} />
@@ -1822,6 +2119,31 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
         </div>
       </div>
 
+      {reindexJob ? (
+        <section className="reindex-status">
+          <div>
+            <strong>
+              {reindexJob.status === "running"
+                ? "正在索引全库"
+                : reindexJob.status === "completed"
+                ? "全库索引完成"
+                : reindexJob.status === "failed"
+                ? "全库索引失败"
+                : "索引待命"}
+            </strong>
+            <small>
+              {reindexJob.processed}/{reindexJob.total} · 已索引 {reindexJob.indexed}
+              {reindexJob.current ? ` · ${localFileLabel(reindexJob.current)}` : ""}
+              {reindexJob.error ? ` · ${reindexJob.error}` : ""}
+            </small>
+          </div>
+          <progress value={reindexJob.processed} max={Math.max(1, reindexJob.total)} />
+        </section>
+      ) : null}
+
+      {docNotice ? <div className="doc-notice">{docNotice}</div> : null}
+      {uploadNotice ? <div className="doc-notice">{uploadNotice}</div> : null}
+
       <section className="search-band">
         <Search size={18} />
         <input
@@ -1839,8 +2161,9 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
         <section className="rag-results">
           {results.map((result) => (
             <article key={result.chunk.id} className="result-item">
-              <strong>{result.chunk.title}</strong>
-              <small>{result.chunk.path}</small>
+              <strong>{result.material.title}</strong>
+              <small>{result.material.path}</small>
+              <span className="result-reason">{result.reason}</span>
               <p>{result.excerpt}</p>
             </article>
           ))}
@@ -1867,29 +2190,55 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
         ) : (
           browserEntries.map((entry) => (
             entry.kind === "folder" ? (
-              <button
-                key={`folder-${entry.path}`}
-                className="material-row material-folder"
-                onClick={() => setCurrentPath(entry.path)}
-              >
+              <article key={`folder-${entry.path}`} className="material-row material-folder">
                 <div>
-                  <strong>
+                  <button className="material-folder-open" onClick={() => setCurrentPath(entry.path)}>
                     <FolderOpen size={17} />
-                    {entry.name}
-                  </strong>
+                    <span>{entry.name}</span>
+                  </button>
                   <small>{entry.count} 个文件</small>
                 </div>
-                <ChevronRight size={18} />
-              </button>
+                <div className="material-actions">
+                  <button className="icon-button" title="打开文件夹" aria-label="打开文件夹" onClick={() => setCurrentPath(entry.path)}>
+                    <ChevronRight size={18} />
+                  </button>
+                  <button
+                    className="icon-button danger-icon"
+                    disabled={busy}
+                    title="删除文件夹"
+                    aria-label="删除文件夹"
+                    onClick={() => deleteMaterialFolder(entry)}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              </article>
             ) : (
               <article key={entry.material.id} className="material-row">
                 <div>
                   <strong>{entry.material.title}</strong>
                   <small>{entry.material.path}</small>
                 </div>
-                <span className={entry.material.status === "indexed" ? "status status-completed" : "status status-failed"}>
-                  {entry.material.status === "indexed" ? `${entry.material.chunkCount} 段` : entry.material.status}
-                </span>
+                <div className="material-actions">
+                  <span className={entry.material.status === "indexed" ? "status status-completed" : "status status-failed"}>
+                    {entry.material.status === "indexed"
+                    ? `${entry.material.chunkCount} 段`
+                    : entry.material.status === "needs_conversion"
+                    ? "待转换"
+                    : entry.material.status === "pending"
+                    ? "待索引"
+                    : entry.material.status}
+                  </span>
+                  <button
+                    className="icon-button danger-icon"
+                    disabled={busy}
+                    title="删除资料"
+                    aria-label="删除资料"
+                    onClick={() => deleteMaterial(entry.material)}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
               </article>
             )
           ))

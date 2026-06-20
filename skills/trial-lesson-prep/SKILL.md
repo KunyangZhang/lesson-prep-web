@@ -9,7 +9,39 @@ description: Prepare structured one-on-one junior-high or high-school math trial
 
 Prepare a trial math lesson that creates a visible and honest learning gain while remaining educationally useful. Use Chinese unless the user asks otherwise. If information is missing, still create a usable draft with `[待确认]` placeholders and a short `课前需确认` section.
 
-Read [references/math-lesson-core.md](references/math-lesson-core.md) first. Its output, source, difficulty, solution, and PDF rules are mandatory. Read [references/class-questions-flow.md](references/class-questions-flow.md) for operational communication and follow-up details.
+Read [references/math-lesson-core.md](references/math-lesson-core.md) first. Its output, source-reliability, difficulty, solution, and PDF rules are mandatory. Read [references/class-questions-flow.md](references/class-questions-flow.md) for operational communication and follow-up details.
+
+## Sub-Agent Delegation Rule
+
+Large lesson-prep tasks must use sub-agent division of labor before final deliverables are assembled. For trial lessons, use these default workstreams:
+
+1. `题目提取`: extract questions from user-provided local files, library candidates, screenshots, and web exam sources; build an internal question index and identify missing figures or unclear text.
+2. `答案核对`: independently solve and verify every selected question, checking conditions, calculations, diagrams, and answer forms.
+3. `课件生成`: build the Beamer classroom PDF from the verified question sequence, keeping it student-facing and aligned with the visible-gain flow.
+4. `逐字稿和内容丰富`: expand the lesson content and teacher script after the verified question sequence is set; add enough diagnostic, model, same-type validation, variant, and homework questions; write page-by-page teaching language, follow-up prompts, likely student responses, correction wording, board notes, and `大招/爽感` moments.
+
+The main agent owns task decomposition, integration, conflict resolution, and the final quality gate. Do not skip `答案核对`, question-volume expansion, or teacher-script enrichment on substantial courses.
+
+## Internal Working Files
+
+Create intermediate working files in `_work/` for substantial lesson-prep jobs. These files are internal QA artifacts and are not user-facing deliverables:
+
+1. `_work/题目索引.md`: extracted local, library, screenshot, and web questions with internal IDs, topics, teaching roles, and missing information.
+2. `_work/候选题池.md`: shortlisted and rejected candidates, fit rationale, and whether a question is verified authentic exam, official exam, simulation/mock, local, adapted, or self-written.
+3. `_work/答案核对表.md`: independent solutions, final answers, condition checks, diagram checks, and unresolved doubts.
+4. `_work/课件页码映射.md`: classroom PDF page numbers mapped to the visible `第X题` labels and teacher-script sections.
+5. `_work/内容丰富清单.md`: checks for sufficient diagnosis, model, same-type validation, variant/authentic-style, homework, prompts, and common-error coverage.
+
+Do not require these working files to be uploaded or emphasized in the final user-facing materials unless the user asks.
+
+## Two-Stage Internal Workflow
+
+Run lesson preparation in two internal stages:
+
+1. Stage 1: complete question extraction, `_work/题目索引.md`, `_work/候选题池.md`, `_work/答案核对表.md`, and the visible-gain course skeleton before drafting final materials.
+2. Stage 2: generate the Beamer classroom PDF, write the teacher script, enrich the content and conversion/follow-up wording, complete the final four deliverables, and run the quality gate.
+
+Do not enter Stage 2 until the selected question sequence has been checked for answer correctness, topic fit, visible-gain design, and enough question volume for the requested class length.
 
 ## Required Outputs
 
@@ -36,7 +68,7 @@ For a 60-minute trial lesson, use a wider version of the default flow:
 - 46-54 min: same-type validation or authentic exam-style question.
 - 54-60 min: before-and-after recap, next-step hook, homework, and parent-facing summary cue.
 
-If a local PDF/question document is provided, use it as the primary lesson spine. Classroom PDF problem pages should show student-facing labels like `第7题`, while `老师逐字稿.md` keeps the local source mapping and detailed teaching script.
+If a local PDF/question document is provided, use it as the primary lesson spine. Classroom PDF problem pages should show student-facing labels like `第7题`; keep any local page/question-number mapping in `_work/题目索引.md` or `_work/课件页码映射.md` for internal verification. The teacher script only needs to align with classroom PDF page numbers and visible `第X题` labels, plus the detailed teaching script.
 
 ## Inputs To Collect Or Infer
 
@@ -69,6 +101,7 @@ Research local materials and web exam questions in parallel:
 - Recursively search regardless of directory depth. Use path matches to shortlist files, then inspect only relevant candidates.
 - Search verified web sources for localized 中考, 高考, school mock-exam, and teaching-research questions.
 - Treat authentic exam questions as a core source, especially when the lesson needs authority, diagnosis, or a memorable method.
+For authentic exam, official exam, and mock/simulation questions, verify and record reliable source information. For local, adapted, or self-written questions, do not force a source label, but never present them as authentic exam questions unless that status is verified.
 
 ### 3. Design A Visible Gain
 
@@ -87,8 +120,12 @@ Build a before-and-after contrast:
 For every used question:
 
 - Verify the mathematics independently.
-- Record source, teaching role, fit, recognition signals, solution plan, full solution, checks, alternative routes when useful, common wrong paths, and a hint ladder.
+- Record teaching role, fit, recognition signals, solution plan, full solution, checks, alternative routes when useful, common wrong paths, and a hint ladder.
+- For authentic exam, official exam, and mock/simulation questions, keep reliable source information; local, adapted, or self-written questions do not need forced source labels and must not be mislabeled as authentic exam questions.
 - Include detailed reasoning in `老师逐字稿.md`, not only a final answer.
+- Expand each selected question into teachable content: setup, first observation, micro-step solution, teacher prompts, expected student responses, common wrong turns, correction wording, and a same-type validation or transfer prompt.
+
+The question set must be rich enough for the requested class length and visible-gain design. For a 40-60 minute trial lesson, include at minimum a diagnostic/trap question, one model question, one guided same-type question, one independent validation question, one variant or authentic exam-style question, and homework or next-step practice. If fewer questions are pedagogically appropriate, explicitly explain why and add richer oral checks, micro-variants, or extension prompts instead of leaving the lesson thin.
 
 ### 5. Design The 40-Minute Class
 
@@ -120,9 +157,16 @@ Use image generation only when a problem genuinely requires a complex situationa
 - Class metadata, assumptions, student diagnosis, objective, and the custom lesson ladder.
 - A minute-by-minute timeline.
 - Natural spoken Chinese under labels such as `老师说`, `学生可能回答`, `追问`, and `板书或批注`.
-- For every question: detailed thinking path, full answer, common wrong paths, correction wording, hints from light to explicit, checks for understanding, and where the question appears in the PDF.
+- For every question: visible `第X题` label when it appears in the classroom PDF, detailed thinking path, full answer, common wrong paths, correction wording, hints from light to explicit, checks for understanding, and where the question appears in the PDF.
 - A before-and-after recap.
 - Pre-class messages, a group introduction, parent-facing post-class feedback, homework, and follow-up wording.
+
+## Mandatory Conversation Modules
+
+Every `老师逐字稿.md` must include these two spoken modules unless the user explicitly removes them:
+
+- `知识点对话（专业度+真题关联）`: place it near the opening after confirming today's target. State today's exact knowledge point, its appearance in recent or representative 高考/地方卷/模考 questions, and why it matters for scoring. Prefer concrete citations such as `2017年全国I卷第21题` or `2022年新高考I卷第22题`; verify sources during research. If exact frequency cannot be verified, write `近年多次出现（具体频次待检索确认）` rather than inventing a count. Use natural spoken wording in this structure: `今天我们要讲的是[知识点]。它在[试卷范围]中经常以[题型/位置]出现，比如[年份+试卷+题号]。这个知识点重要，是因为[大题核心/小题陷阱/后续模块基础]。掌握好它，你可以在[板块]稳定拿分，并为[后续内容]打基础。`
+- `课程总结（结束前2分钟）`: place it in the last two minutes. Make the student see the learning path and preview the next lesson. Include four parts: `学习内容`（具体知识点/题型 and 1-2个核心方法）, `学生表现`（专注度、回答、练习正确率、主要错误、潜力；未上课时用 `[课后填写]`）, `待提升点`（概念理解、步骤规范、速度/熟练度等具体点）, and `后续建议`（正式学习从哪个模块开始, 预计几次课见到明显改善用 `[待确认]` or a conservative range, and personalized plan wording). Do not fabricate real classroom performance before class happens.
 
 ## Knowledge Detail File
 
@@ -134,7 +178,7 @@ Use image generation only when a problem genuinely requires a complex situationa
 - Complete definitions, notation, formulas, properties, theorem conditions, derivations, and proof ideas.
 - Question-type taxonomy and recognition signals.
 - Method templates with `适用条件`, `思考路径`, `操作步骤`, `易错点`, `检查方式`, and `迁移方向`.
-- Selected examples and authentic exam questions with detailed solutions and source labels.
+- Selected examples and authentic exam or mock/simulation questions with detailed solutions and reliable source labels when they are claimed as such. Local, adapted, or self-written questions do not need forced source labels, but must not be falsely labeled as authentic exam questions.
 - A `知识点完整性检查` section.
 
 ## Post-Class Feedback File
@@ -154,6 +198,8 @@ Use image generation only when a problem genuinely requires a complex situationa
 
 Write in parent-facing Chinese. For trial lessons, connect the feedback to the visible learning gain, the student's bottleneck, the method learned, homework, and the recommended next-step course direction. Do not fabricate actual classroom performance or parent reactions; if the lesson has not happened yet, mark uncertain behavior as `[课后填写]` or write it as a post-class feedback draft.
 
+Mirror the `课程总结（结束前2分钟）` structure in `课后反馈.md` when no stronger user template is provided: `学习内容`, `学生表现`, `待提升点`, and `后续建议`.
+
 ## Tone And Safety
 
 - Encourage without shaming or pressure.
@@ -166,9 +212,16 @@ Write in parent-facing Chinese. For trial lessons, connect the feedback to the v
 Before finishing:
 
 - Confirm all four required deliverables exist, including `课后反馈.md`.
+- Confirm the `_work/` internal files exist for substantial jobs: `题目索引.md`, `候选题池.md`, `答案核对表.md`, `课件页码映射.md`, and `内容丰富清单.md`.
+- Confirm the two-stage workflow was followed: extraction, candidate pool, answer verification, and visible-gain course skeleton before final PDF/script generation.
+- Confirm `老师逐字稿.md` includes `知识点对话（专业度+真题关联）` and `课程总结（结束前2分钟）`.
+- Confirm the knowledge-point dialogue uses verified exam citations or explicitly marks unverifiable frequency as `[待检索确认]`.
+- Confirm any question called `真题`, `官方考试题`, or `模拟题` has a reliable source; confirm local, adapted, or self-written questions are not mislabeled as authentic exam questions.
+- Confirm the 40-60 minute trial lesson has at least diagnostic/trap, model, guided same-type, independent validation, variant or authentic-style, and homework/next-step practice components.
 - Confirm the Markdown files contain no fenced code blocks and use `$...$` or `$$...$$` math delimiters.
 - Confirm there are no bare LaTeX commands in prose and no formulas wrapped only by ordinary parentheses.
 - Confirm `老师逐字稿.md` and `知识点详解.md` contain no skipped reasoning steps, no unexplained formulas or theorem jumps, and no unapproved out-of-scope knowledge.
+- Confirm every selected question's final answer and key reasoning have been independently checked; flag unresolved or possibly wrong answers before finalization.
 - Compile the classroom PDF with XeLaTeX and confirm it opens.
 - Render representative PDF pages and inspect readability, answer reveal order, and writable space.
 - Confirm every displayed diagram is mathematically accurate.

@@ -11,8 +11,22 @@ const requiredFiles = [
   { name: "课后反馈.md", minSize: 80 }
 ];
 
+const requiredWorkFiles = [
+  "_work/题目索引.md",
+  "_work/候选题池.md",
+  "_work/答案核对表.md",
+  "_work/课件页码映射.md",
+  "_work/内容丰富清单.md"
+];
+
 const rawLatexCommandPattern =
   /\\(?:frac|dfrac|tfrac|sqrt|times|sum|prod|int|lim|begin|end|cdot|leq|geq|neq|vec|overrightarrow|perp|parallel|angle|sim|mu|sigma|alpha|beta|gamma|theta|Delta)\b/;
+
+const jumpStepPattern = /显然|容易得到|易得|不难看出|直接可得|套公式|直接代入|过程省略|证明略|略去|此处略|同理可得/g;
+const questionPattern = /第\s*[一二三四五六七八九十百\d]+\s*题/g;
+const teacherScriptMarkers = ["老师说", "学生可能回答", "追问", "纠错", "板书"];
+const answerCheckMarkers = ["最终答案", "关键条件", "关键步骤", "易错点", "核对结论"];
+const richnessMarkers = ["诊断", "例题", "模型", "变式", "巩固", "作业", "同类验证"];
 
 function item(
   key: string,
@@ -152,6 +166,192 @@ function checkMarkdownFile(filePath: string) {
   return checks;
 }
 
+function findCourseFile(files: CourseFile[], relativePath: string) {
+  const normalized = relativePath.replace(/\\/g, "/");
+  return files.find((file) => file.relativePath.replace(/\\/g, "/") === normalized);
+}
+
+function readCourseTextFile(files: CourseFile[], relativePath: string) {
+  const file = findCourseFile(files, relativePath);
+  if (!file || file.kind !== "markdown") return { file, text: "" };
+  return { file, text: readText(file.path) };
+}
+
+function lessonQuestionMinimum(course: Course) {
+  if (course.type === "trial") {
+    return course.durationMinutes >= 60 ? 6 : 5;
+  }
+  if (course.durationMinutes >= 90) return 10;
+  if (course.durationMinutes >= 60) return 7;
+  return 5;
+}
+
+function uniqueQuestionCount(...texts: string[]) {
+  const labels = new Set<string>();
+  for (const text of texts) {
+    for (const match of text.matchAll(questionPattern)) {
+      labels.add(match[0].replace(/\s+/g, ""));
+    }
+  }
+  return labels.size;
+}
+
+function checkWorkFiles(files: CourseFile[]) {
+  const checks: QualityCheckItem[] = [];
+  for (const relativePath of requiredWorkFiles) {
+    const file = findCourseFile(files, relativePath);
+    if (!file) {
+      checks.push(item(`work-${relativePath}`, relativePath, "fail", "缺少备课中间产物，无法判断题目、答案核对和内容丰富过程。"));
+      continue;
+    }
+    if (file.size < 120) {
+      checks.push(item(`work-size-${relativePath}`, relativePath, "warn", "中间产物内容偏少，建议确认是否只是占位。", file.path));
+    } else {
+      checks.push(item(`work-exists-${relativePath}`, relativePath, "pass", "中间产物存在。", file.path));
+    }
+  }
+  return checks;
+}
+
+function checkAnswerVerification(files: CourseFile[]) {
+  const checks: QualityCheckItem[] = [];
+  const { file, text } = readCourseTextFile(files, "_work/答案核对表.md");
+  if (!file) return checks;
+
+  const missingMarkers = answerCheckMarkers.filter((marker) => !text.includes(marker));
+  if (missingMarkers.length > 0) {
+    checks.push(
+      item(
+        "answer-check-structure",
+        "答案核对表结构",
+        "fail",
+        `答案核对表缺少关键栏目：${missingMarkers.join("、")}。`,
+        file.path
+      )
+    );
+  } else {
+    checks.push(item("answer-check-structure", "答案核对表结构", "pass", "答案核对表包含关键核对栏目。", file.path));
+  }
+
+  if (/未核对|待核对|答案不确定|存疑|待确认/.test(text)) {
+    checks.push(item("answer-check-unverified", "答案核对结论", "fail", "答案核对表仍有未核对或存疑题目。", file.path));
+  }
+
+  return checks;
+}
+
+function checkQuestionVolume(course: Course, files: CourseFile[]) {
+  const checks: QualityCheckItem[] = [];
+  const teacher = readCourseTextFile(files, "老师逐字稿.md");
+  const index = readCourseTextFile(files, "_work/题目索引.md");
+  const pool = readCourseTextFile(files, "_work/候选题池.md");
+  const richness = readCourseTextFile(files, "_work/内容丰富清单.md");
+  const count = uniqueQuestionCount(teacher.text, index.text, pool.text);
+  const minimum = lessonQuestionMinimum(course);
+  if (count < minimum) {
+    checks.push(
+      item(
+        "question-volume",
+        "题量",
+        "fail",
+        `识别到约 ${count} 道题，低于当前课长建议下限 ${minimum}。请补诊断、例题、变式、巩固或作业。`,
+        teacher.file?.path || index.file?.path
+      )
+    );
+  } else {
+    checks.push(item("question-volume", "题量", "pass", `识别到约 ${count} 道题，达到当前课长建议下限 ${minimum}。`, teacher.file?.path));
+  }
+
+  if (richness.file) {
+    const missing = richnessMarkers.filter((marker) => !richness.text.includes(marker));
+    if (missing.length > 2) {
+      checks.push(
+        item(
+          "content-richness",
+          "内容丰富清单",
+          "warn",
+          `内容丰富清单缺少多个环节关键词：${missing.join("、")}。`,
+          richness.file.path
+        )
+      );
+    } else {
+      checks.push(item("content-richness", "内容丰富清单", "pass", "内容丰富清单覆盖主要教学环节。", richness.file.path));
+    }
+  }
+
+  return checks;
+}
+
+function checkTeacherScriptDepth(files: CourseFile[]) {
+  const checks: QualityCheckItem[] = [];
+  const { file, text } = readCourseTextFile(files, "老师逐字稿.md");
+  if (!file) return checks;
+
+  const missingMarkers = teacherScriptMarkers.filter((marker) => !text.includes(marker));
+  if (missingMarkers.length > 1) {
+    checks.push(
+      item(
+        "teacher-script-markers",
+        "逐字稿丰富度",
+        "fail",
+        `逐字稿缺少关键教学话术标记：${missingMarkers.join("、")}。`,
+        file.path
+      )
+    );
+  } else {
+    checks.push(item("teacher-script-markers", "逐字稿丰富度", "pass", "逐字稿包含主要教学话术标记。", file.path));
+  }
+
+  const jumpMatches = text.match(jumpStepPattern) || [];
+  if (jumpMatches.length >= 8) {
+    checks.push(
+      item(
+        "teacher-script-jump-steps",
+        "跳步风险",
+        "fail",
+        `逐字稿出现 ${jumpMatches.length} 处疑似跳步表述，例如“${[...new Set(jumpMatches)].slice(0, 4).join("、")}”。`,
+        file.path
+      )
+    );
+  } else if (jumpMatches.length > 0) {
+    checks.push(
+      item(
+        "teacher-script-jump-steps",
+        "跳步风险",
+        "warn",
+        `逐字稿出现 ${jumpMatches.length} 处疑似跳步表述，建议人工确认。`,
+        file.path
+      )
+    );
+  } else {
+    checks.push(item("teacher-script-jump-steps", "跳步风险", "pass", "未发现明显跳步套话。", file.path));
+  }
+
+  return checks;
+}
+
+function checkExamSourcePolicy(files: CourseFile[]) {
+  const checks: QualityCheckItem[] = [];
+  const index = readCourseTextFile(files, "_work/题目索引.md");
+  const pool = readCourseTextFile(files, "_work/候选题池.md");
+  const text = `${index.text}\n${pool.text}`;
+  const filePath = index.file?.path || pool.file?.path;
+  if (!text.trim()) return checks;
+
+  if (/真题|高考|中考|一模|二模|模拟/.test(text)) {
+    if (/(19|20)\d{2}年/.test(text) && /全国|新高考|北京|上海|天津|重庆|河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|海南|四川|贵州|云南|陕西|甘肃|青海|内蒙古|广西|西藏|宁夏|新疆|一模|二模|模拟/.test(text)) {
+      checks.push(item("exam-source", "真题来源", "pass", "真题或模考题包含年份和地区/试卷信息。", filePath));
+    } else {
+      checks.push(item("exam-source", "真题来源", "warn", "候选题池提到真题/模考，但年份、地区或试卷信息可能不完整。", filePath));
+    }
+  }
+  if (/伪称真题|来源待核验/.test(text)) {
+    checks.push(item("exam-source-uncertain", "真题来源风险", "warn", "存在来源待核验或不得伪称真题的提示，请人工确认。", filePath));
+  }
+
+  return checks;
+}
+
 function checkPdf(filePath: string) {
   const buffer = fs.readFileSync(filePath);
   const head = buffer.subarray(0, 5).toString("latin1");
@@ -211,7 +411,7 @@ export function assessCourseQuality(course: Course): GenerationQuality {
       continue;
     }
     if (file.size < required.minSize) {
-      checks.push(item(`size-${required.name}`, required.name, "warn", "文件过小，可能内容不足。", file.path));
+      checks.push(item(`size-${required.name}`, required.name, "warn", "文件过小，可能不是有效产物。", file.path));
     } else {
       checks.push(item(`exists-${required.name}`, required.name, "pass", "文件存在且大小正常。", file.path));
     }
@@ -223,6 +423,12 @@ export function assessCourseQuality(course: Course): GenerationQuality {
 
   const pdf = byName.get("课堂课件.pdf");
   if (pdf) checks.push(checkPdf(pdf.path));
+
+  checks.push(...checkWorkFiles(generatedFiles));
+  checks.push(...checkAnswerVerification(generatedFiles));
+  checks.push(...checkQuestionVolume(course, generatedFiles));
+  checks.push(...checkTeacherScriptDepth(generatedFiles));
+  checks.push(...checkExamSourcePolicy(generatedFiles));
 
   const score = scoreItems(checks);
   return {

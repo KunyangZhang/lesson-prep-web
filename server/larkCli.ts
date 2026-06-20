@@ -17,11 +17,22 @@ interface CalendarCreateOptions {
   calendarId?: string;
 }
 
+interface CalendarUpdateOptions extends CalendarCreateOptions {
+  eventId: string;
+}
+
 interface DriveCreateFolderData {
   folder_token?: string;
   token?: string;
   url?: string;
   name?: string;
+}
+
+interface DriveSearchOptions {
+  query: string;
+  folderToken?: string;
+  docTypes?: string;
+  pageSize?: number;
 }
 
 export interface LarkCliResult<T = unknown> {
@@ -202,6 +213,20 @@ export async function createDriveFolderWithLarkCli(name: string, parentFolderTok
   return runLarkCliWithCurrentAuth<DriveCreateFolderData>(args, { timeoutMs: 60_000 });
 }
 
+export async function deleteDriveFolderWithLarkCli(folderToken: string) {
+  const args = ["drive", "+delete", "--as", "user", "--file-token", folderToken, "--type", "folder", "--yes", "--format", "json"];
+  return runLarkCliWithCurrentAuth(args, { timeoutMs: 180_000 });
+}
+
+export async function searchDriveWithLarkCli(options: DriveSearchOptions) {
+  const args = ["drive", "+search", "--as", "user", "--query", options.query, "--only-title"];
+  if (options.folderToken) args.push("--folder-tokens", options.folderToken);
+  if (options.docTypes) args.push("--doc-types", options.docTypes);
+  if (options.pageSize) args.push("--page-size", String(options.pageSize));
+  args.push("--format", "json");
+  return runLarkCliWithCurrentAuth(args, { timeoutMs: 60_000 });
+}
+
 export async function createCalendarEventWithLarkCli(options: CalendarCreateOptions) {
   const args = [
     "calendar",
@@ -217,6 +242,27 @@ export async function createCalendarEventWithLarkCli(options: CalendarCreateOpti
   ];
   if (options.description) args.push("--description", options.description);
   if (options.attendeeIds) args.push("--attendee-ids", options.attendeeIds);
+  if (options.calendarId) args.push("--calendar-id", options.calendarId);
+  args.push("--format", "json");
+  return runLarkCliWithCurrentAuth(args, { timeoutMs: 60_000 });
+}
+
+export async function updateCalendarEventWithLarkCli(options: CalendarUpdateOptions) {
+  const args = [
+    "calendar",
+    "+update",
+    "--as",
+    "user",
+    "--event-id",
+    options.eventId,
+    "--summary",
+    options.summary,
+    "--start",
+    options.start,
+    "--end",
+    options.end
+  ];
+  if (options.description) args.push("--description", options.description);
   if (options.calendarId) args.push("--calendar-id", options.calendarId);
   args.push("--format", "json");
   return runLarkCliWithCurrentAuth(args, { timeoutMs: 60_000 });

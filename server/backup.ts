@@ -1,5 +1,6 @@
 import JSZip from "jszip";
 import { config, materialRoot } from "./config.js";
+import { getRagStats } from "./rag.js";
 import { nowIso } from "./store.js";
 import type { Store } from "./store.js";
 
@@ -14,6 +15,7 @@ export function backupFileName() {
 export async function createAppBackup(store: Store) {
   const zip = new JSZip();
   const generatedAt = nowIso();
+  const ragStats = getRagStats(store);
   const manifest = {
     generatedAt,
     app: "lesson-prep-web",
@@ -25,7 +27,7 @@ export async function createAppBackup(store: Store) {
       courses: store.data.courses.length,
       jobs: store.data.jobs.length,
       materials: store.data.materials.length,
-      ragChunks: store.data.ragChunks.length
+      ragChunks: ragStats.chunks
     },
     notes: [
       "This backup contains the application database snapshot.",
