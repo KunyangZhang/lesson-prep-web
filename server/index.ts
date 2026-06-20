@@ -28,6 +28,7 @@ import {
   deleteMaterialFolder,
   getRagStats,
   indexMaterialFile,
+  listMaterialFilesNeedingIndex,
   listMaterialCandidates,
   markMaterialIndexFailed,
   registerMaterialFile,
@@ -172,6 +173,7 @@ const ragReindexJob = {
   startedAt: "",
   endedAt: ""
 };
+let ragIncrementalRequested = false;
 
 function publicRagReindexJob() {
   return { ...ragReindexJob };
@@ -206,8 +208,31 @@ function runRagWorker(filePath: string) {
   });
 }
 
-async function startRagReindexJob() {
-  if (ragReindexJob.status === "running") return;
+async function indexMaterialCandidates(candidates: string[], failures: string[]) {
+  ragReindexJob.total += candidates.length;
+  for (const filePath of candidates) {
+    ragReindexJob.current = filePath;
+    const result = await runRagWorker(filePath);
+    store.reload();
+    clearRagIndexCache();
+    ragReindexJob.processed += 1;
+    if (result.ok) {
+      ragReindexJob.indexed += 1;
+    } else {
+      const error = result.error || "索引进程失败";
+      try {
+        markMaterialIndexFailed(store, filePath, error);
+        store.reload();
+        clearRagIndexCache();
+      } catch {
+        // Keep the indexing job moving even if recording the failed file fails.
+      }
+      failures.push(`${path.basename(filePath)}: ${error}`);
+    }
+  }
+}
+
+function resetRagJob() {
   Object.assign(ragReindexJob, {
     status: "running",
     total: 0,
@@ -218,6 +243,11 @@ async function startRagReindexJob() {
     startedAt: nowIso(),
     endedAt: ""
   });
+}
+
+async function startRagReindexJob() {
+  if (ragReindexJob.status === "running") return;
+  resetRagJob();
   try {
     store.reload();
     clearRagIndexCache();
@@ -226,28 +256,39 @@ async function startRagReindexJob() {
     clearMaterialRootIndex(store, materialRoot);
     store.reload();
     clearRagIndexCache();
-    ragReindexJob.total = candidates.length;
     const failures: string[] = [];
-    for (const filePath of candidates) {
-      ragReindexJob.current = filePath;
-      const result = await runRagWorker(filePath);
+    await indexMaterialCandidates(candidates, failures);
+    ragReindexJob.error = failures.length > 0 ? `${failures.length} 个文件索引失败：${failures.slice(0, 3).join("；")}` : "";
+    ragReindexJob.status = "completed";
+    ragReindexJob.endedAt = nowIso();
+  } catch (error) {
+    ragReindexJob.status = "failed";
+    ragReindexJob.error = error instanceof Error ? error.message : String(error);
+    ragReindexJob.endedAt = nowIso();
+  } finally {
+    ragReindexJob.current = "";
+    if (ragIncrementalRequested) {
+      ragIncrementalRequested = false;
+      void startRagIncrementalJob();
+    }
+  }
+}
+
+async function startRagIncrementalJob() {
+  if (ragReindexJob.status === "running") {
+    ragIncrementalRequested = true;
+    return;
+  }
+  resetRagJob();
+  try {
+    const failures: string[] = [];
+    do {
+      ragIncrementalRequested = false;
       store.reload();
       clearRagIndexCache();
-      ragReindexJob.processed += 1;
-      if (result.ok) {
-        ragReindexJob.indexed += 1;
-      } else {
-        const error = result.error || "索引进程失败";
-        try {
-          markMaterialIndexFailed(store, filePath, error);
-          store.reload();
-          clearRagIndexCache();
-        } catch {
-          // Keep the indexing job moving even if recording the failed file fails.
-        }
-        failures.push(`${path.basename(filePath)}: ${error}`);
-      }
-    }
+      const candidates = listMaterialFilesNeedingIndex(store, path.join(config.workspaceRoot, "资料库"));
+      await indexMaterialCandidates(candidates, failures);
+    } while (ragIncrementalRequested);
     ragReindexJob.error = failures.length > 0 ? `${failures.length} 个文件索引失败：${failures.slice(0, 3).join("；")}` : "";
     ragReindexJob.status = "completed";
     ragReindexJob.endedAt = nowIso();
@@ -768,6 +809,7 @@ app.post(
       await fs.promises.rename(file.path, destination);
       materials.push(registerMaterialFile(store, destination, file.mimetype));
     }
+    void startRagIncrementalJob();
     const ragStats = getRagStats(store);
     res.json({ materials, queued: materials.length, chunkCount: ragStats.chunks, stats: ragStats, job: publicRagReindexJob() });
   })

@@ -2010,7 +2010,7 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
         const data = await api.post<{ job: RagReindexJob }>("/api/materials/upload", formData);
         setReindexJob(data.job);
       }
-      setUploadNotice(`已上传 ${allFiles.length} 个文件，已保存为待索引。需要检索这些新资料时，请点击“一键索引全库”。`);
+      setUploadNotice(`已上传 ${allFiles.length} 个文件，正在增量索引新资料。`);
       await loadMaterials();
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
