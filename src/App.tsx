@@ -16,6 +16,7 @@ import {
   ExternalLink,
   Image,
   FileText,
+  Eye,
   FolderUp,
   FolderOpen,
   KeyRound,
@@ -37,7 +38,7 @@ import {
   UserRound
 } from "lucide-react";
 import { api } from "./api";
-import type { Course, CourseFile, Diagnostics, DiagnosticStatus, Job, Material, RagReindexJob, RagSearchResult, RagSourceKind, Student, SystemInfo, User } from "./types";
+import type { Course, CourseFile, Diagnostics, DiagnosticStatus, Job, Material, RagQuestionRecord, RagReindexJob, RagSearchResult, RagSourceKind, Student, SystemInfo, User } from "./types";
 
 type View = "students" | "materials";
 
@@ -1957,6 +1958,7 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
   const [uploadNotice, setUploadNotice] = useState("");
   const [uploadRoot, setUploadRoot] = useState("");
   const [currentPath, setCurrentPath] = useState("");
+  const [selectedMaterialId, setSelectedMaterialId] = useState("");
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<RagSearchResult[]>([]);
   const [busy, setBusy] = useState(false);
@@ -2077,6 +2079,10 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
   const questionCount = useMemo(() => materials.reduce((sum, material) => sum + (material.questionCount || 0), 0), [materials]);
   const snippetCount = useMemo(() => materials.reduce((sum, material) => sum + (material.snippetCount || 0), 0), [materials]);
   const browserEntries = useMemo(() => buildMaterialEntries(materials, uploadRoot, currentPath), [materials, uploadRoot, currentPath]);
+  const selectedMaterial = useMemo(
+    () => materials.find((material) => material.id === selectedMaterialId) || browserEntries.find((entry) => entry.kind === "file")?.material || null,
+    [browserEntries, materials, selectedMaterialId]
+  );
 
   return (
     <section className="materials-view">
@@ -2238,7 +2244,7 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
                 </div>
               </article>
             ) : (
-              <article key={entry.material.id} className="material-row">
+            <article key={entry.material.id} className="material-row">
                 <div>
                   <strong>{entry.material.title}</strong>
                   <small>{entry.material.path}</small>
@@ -2246,13 +2252,24 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
                 <div className="material-actions">
                   <span className={entry.material.status === "indexed" ? "status status-completed" : "status status-failed"}>
                     {entry.material.status === "indexed"
-                    ? `${entry.material.questionCount || 0} 题 · ${entry.material.snippetCount || 0} 段`
+                    ? materialIndexLabel(entry.material)
                     : entry.material.status === "needs_conversion"
                     ? "待转换"
                     : entry.material.status === "pending"
                     ? "待索引"
                     : entry.material.status}
                   </span>
+                  <button
+                    className="icon-button"
+                    title="预览 RAG 内容"
+                    aria-label="预览 RAG 内容"
+                    onClick={() => setSelectedMaterialId(entry.material.id)}
+                  >
+                    <Eye size={15} />
+                  </button>
+                  <a className="icon-button" title="新页面打开" aria-label="新页面打开" href={`/viewer?path=${encodeURIComponent(entry.material.path)}`} target="_blank" rel="noreferrer">
+                    <ExternalLink size={15} />
+                  </a>
                   <button
                     className="icon-button danger-icon"
                     disabled={busy}
@@ -2268,6 +2285,8 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
           ))
         )}
       </section>
+
+      <MaterialRagPreview material={selectedMaterial} />
     </section>
   );
 }
@@ -2286,6 +2305,82 @@ function sourceKindLabel(kind: RagSourceKind) {
 
 function normalizePathSeparators(value: string) {
   return value.replace(/\\/g, "/").replace(/\/+/g, "/");
+}
+
+function materialIndexLabel(material: Material) {
+  const questions = material.questionCount || 0;
+  const snippets = material.snippetCount || 0;
+  if (questions > 0 || snippets > 0) return `${questions} 题 · ${snippets} 段`;
+  return "已索引 · 未拆出题目";
+}
+
+interface MaterialRagPreviewData {
+  material: Material;
+  questions: RagQuestionRecord[];
+  snippets: NonNullable<RagSearchResult["snippet"]>[];
+}
+
+function MaterialRagPreview({ material }: { material: Material | null }) {
+  const [preview, setPreview] = useState<MaterialRagPreviewData | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setPreview(null);
+    setError("");
+    if (!material) return;
+    api
+      .get<MaterialRagPreviewData>(`/api/materials/${material.id}/preview`)
+      .then((data) => setPreview(data))
+      .catch((err) => setError(err.message));
+  }, [material]);
+
+  if (!material) {
+    return (
+      <section className="preview-panel empty-preview">
+        <FileText size={26} />
+        <h4>请选择资料查看 RAG 内容</h4>
+      </section>
+    );
+  }
+
+  return (
+    <section className="preview-panel material-rag-preview">
+      <div className="preview-title">
+        <strong>{material.title}</strong>
+        <span className="preview-actions">
+          <a href={`/viewer?path=${encodeURIComponent(material.path)}`} target="_blank" rel="noreferrer">
+            原文件
+          </a>
+        </span>
+      </div>
+      {error ? <p className="form-error">{error}</p> : null}
+      {!preview ? <div className="quiet-empty">正在读取 RAG 内容...</div> : null}
+      {preview && preview.questions.length === 0 && preview.snippets.length === 0 ? (
+        <div className="quiet-empty">{material.status === "pending" ? "这个文件尚未索引。" : "这个文件没有可预览的 RAG 题目或片段。"}</div>
+      ) : null}
+      {preview?.questions.map((question) => (
+        <article key={question.id} className="rag-preview-item">
+          <div className="result-meta">
+            <span>{question.questionNumber || question.label}</span>
+            <span>{sourceKindLabel(question.sourceKind)}</span>
+            <span>{question.questionType}</span>
+            <span>{question.hasAnswer ? "有解析" : "需验算"}</span>
+          </div>
+          <p>{question.text}</p>
+          {question.solution ? <small>{question.solution}</small> : null}
+        </article>
+      ))}
+      {preview?.snippets.map((snippet) => (
+        <article key={snippet.id} className="rag-preview-item">
+          <div className="result-meta">
+            <span>{snippet.kind}</span>
+            <span>参考片段</span>
+          </div>
+          <p>{snippet.text}</p>
+        </article>
+      ))}
+    </section>
+  );
 }
 
 function materialRelativePath(material: Material, uploadRoot: string) {

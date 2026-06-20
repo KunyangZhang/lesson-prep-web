@@ -26,12 +26,15 @@ import {
   clearRagIndexCache,
   deleteMaterialFile,
   deleteMaterialFolder,
+  getMaterialRagPreview,
   getRagStats,
   indexMaterialFile,
+  listMaterialCatalog,
   listMaterialFilesNeedingIndex,
   listMaterialCandidates,
   markMaterialIndexFailed,
   registerMaterialFile,
+  resetMaterialRootIndex,
   searchRag
 } from "./rag.js";
 import { authRateLimit, clearAuthRateLimit, securityHeaders } from "./security.js";
@@ -253,7 +256,7 @@ async function startRagReindexJob() {
     clearRagIndexCache();
     const materialRoot = path.join(config.workspaceRoot, "资料库");
     const candidates = listMaterialCandidates(materialRoot);
-    clearMaterialRootIndex(store, materialRoot);
+    resetMaterialRootIndex(store, materialRoot);
     store.reload();
     clearRagIndexCache();
     const failures: string[] = [];
@@ -788,12 +791,22 @@ app.get("/api/files/raw", requireAuth, (req, res) => {
 
 app.get("/api/materials", requireAuth, (req, res) => {
   const ragStats = getRagStats(store);
+  const materials = listMaterialCatalog(store);
   res.json({
-    materials: store.data.materials.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    materials: materials.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     chunkCount: ragStats.chunks,
     stats: ragStats,
     uploadRoot
   });
+});
+
+app.get("/api/materials/:materialId/preview", requireAuth, (req, res) => {
+  const preview = getMaterialRagPreview(store, routeParam(req, "materialId"));
+  if (!preview) {
+    res.status(404).json({ error: "Material not found." });
+    return;
+  }
+  res.json(preview);
 });
 
 app.post(
@@ -820,7 +833,9 @@ app.post(
   requireAuth,
   asyncHandler(async (req, res) => {
     if (ragReindexJob.status !== "running") {
-      void startRagReindexJob();
+      setImmediate(() => {
+        void startRagReindexJob();
+      });
     }
     res.json({ job: publicRagReindexJob(), stats: getRagStats(store) });
   })

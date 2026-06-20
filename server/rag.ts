@@ -439,6 +439,16 @@ export function clearMaterialRootIndex(store: Store, root = path.join(config.wor
   return removedMaterialIds.size;
 }
 
+export function resetMaterialRootIndex(store: Store, root = path.join(config.workspaceRoot, "资料库")) {
+  const resolvedRoot = assertWithinWorkspace(root);
+  const rootWithSep = resolvedRoot.endsWith(path.sep) ? resolvedRoot : `${resolvedRoot}${path.sep}`;
+  store.data.materials = store.data.materials.filter((material) => material.path !== resolvedRoot && !material.path.startsWith(rootWithSep));
+  store.data.ragChunks = [];
+  cachedIndex = emptyIndex();
+  store.save();
+  saveIndex(cachedIndex);
+}
+
 function yieldToEventLoop() {
   return new Promise<void>((resolve) => {
     setImmediate(resolve);
@@ -501,6 +511,48 @@ function materialNeedsIndex(store: Store, index: RagIndexDb, filePath: string) {
 export function listMaterialFilesNeedingIndex(store: Store, root = path.join(config.workspaceRoot, "资料库")) {
   const index = getIndex(store);
   return listMaterialCandidates(root).filter((filePath) => materialNeedsIndex(store, index, filePath));
+}
+
+export function listMaterialCatalog(store: Store, root = path.join(config.workspaceRoot, "资料库")) {
+  const index = getIndex(store);
+  const byId = new Map<string, Material>();
+  for (const material of index.materials) byId.set(material.id, toPublicMaterial(material));
+  for (const material of store.data.materials) byId.set(material.id, { ...material, ...byId.get(material.id) });
+
+  const now = nowIso();
+  for (const filePath of listMaterialCandidates(root)) {
+    const resolved = assertWithinWorkspace(filePath);
+    const stat = fs.statSync(resolved);
+    const id = hashId(resolved.toLowerCase());
+    if (byId.has(id)) continue;
+    const ext = path.extname(resolved).toLowerCase();
+    byId.set(id, {
+      id,
+      title: decodeUploadName(path.basename(resolved)),
+      path: resolved,
+      size: stat.size,
+      status: conversionExtensions.has(ext) ? "needs_conversion" : "pending",
+      chunkCount: 0,
+      questionCount: 0,
+      snippetCount: 0,
+      error: conversionExtensions.has(ext) ? "旧版 .doc 暂不解析正文，请转换为 .docx 后重建索引。" : "尚未索引。",
+      createdAt: now,
+      updatedAt: now
+    });
+  }
+
+  return [...byId.values()];
+}
+
+export function getMaterialRagPreview(store: Store, materialId: string) {
+  const index = getIndex(store);
+  const material = index.materials.find((item) => item.id === materialId) || store.data.materials.find((item) => item.id === materialId);
+  if (!material) return null;
+  return {
+    material: "tags" in material ? toPublicMaterial(material as RagIndexedMaterial) : material,
+    questions: index.questions.filter((question) => question.materialId === materialId).slice(0, 80),
+    snippets: index.snippets.filter((snippet) => snippet.materialId === materialId).slice(0, 40)
+  };
 }
 
 export async function deleteMaterialFile(store: Store, materialId: string) {

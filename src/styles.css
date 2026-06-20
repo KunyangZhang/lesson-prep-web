@@ -1145,6 +1145,31 @@ textarea:focus {
   color: #33433e;
 }
 
+.material-rag-preview {
+  margin-top: 14px;
+}
+
+.rag-preview-item {
+  border-top: 1px solid var(--line);
+  padding: 12px 0;
+}
+
+.rag-preview-item p {
+  color: #26332f;
+  line-height: 1.65;
+  margin: 8px 0;
+  white-space: pre-wrap;
+}
+
+.rag-preview-item small {
+  color: var(--muted);
+  display: block;
+  line-height: 1.55;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
 .material-row {
   display: flex;
   align-items: center;
