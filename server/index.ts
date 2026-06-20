@@ -22,7 +22,6 @@ import { onJobFinished } from "./jobEvents.js";
 import { cancelCodexJob, createCodexJob, recoverInterruptedJobs, runCodexJob } from "./jobs.js";
 import { assessCourseQuality } from "./quality.js";
 import {
-  clearMaterialRootIndex,
   clearRagIndexCache,
   deleteMaterialFile,
   deleteMaterialFolder,
@@ -248,9 +247,9 @@ function resetRagJob() {
   });
 }
 
-async function startRagReindexJob() {
-  if (ragReindexJob.status === "running") return;
-  resetRagJob();
+async function startRagReindexJob(alreadyStarted = false) {
+  if (ragReindexJob.status === "running" && !alreadyStarted) return;
+  if (!alreadyStarted) resetRagJob();
   try {
     store.reload();
     clearRagIndexCache();
@@ -833,8 +832,9 @@ app.post(
   requireAuth,
   asyncHandler(async (req, res) => {
     if (ragReindexJob.status !== "running") {
+      resetRagJob();
       setImmediate(() => {
-        void startRagReindexJob();
+        void startRagReindexJob(true);
       });
     }
     res.json({ job: publicRagReindexJob(), stats: getRagStats(store) });
