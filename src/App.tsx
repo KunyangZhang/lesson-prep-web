@@ -2100,6 +2100,7 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
   }
 
   const indexedCount = useMemo(() => materials.filter((material) => material.status === "indexed").length, [materials]);
+  const totalMaterialCount = materials.length;
   const questionCount = useMemo(() => materials.reduce((sum, material) => sum + (material.questionCount || 0), 0), [materials]);
   const snippetCount = useMemo(() => materials.reduce((sum, material) => sum + (material.snippetCount || 0), 0), [materials]);
   const browserEntries = useMemo(() => buildMaterialEntries(materials, uploadRoot, currentPath), [materials, uploadRoot, currentPath]);
@@ -2137,18 +2138,27 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
       <div className="stat-row">
         <div>
           <Boxes size={18} />
-          <strong>{indexedCount}</strong>
-          <span>已索引文件</span>
+          <strong>{totalMaterialCount}</strong>
+          <span>资料文件</span>
+          <small>{indexedCount} 个已索引</small>
         </div>
         <div>
           <FileText size={18} />
           <strong>{questionCount}</strong>
           <span>题目记录</span>
+          <small>优先用于选题</small>
         </div>
         <div>
           <BookOpen size={18} />
           <strong>{snippetCount}</strong>
           <span>参考片段</span>
+          <small>知识点、解析与说明</small>
+        </div>
+        <div>
+          <Search size={18} />
+          <strong>{chunkCount}</strong>
+          <span>可检索内容</span>
+          <small>题目 + 片段</small>
         </div>
       </div>
 

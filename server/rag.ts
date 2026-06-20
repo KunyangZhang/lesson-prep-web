@@ -683,13 +683,14 @@ function toPublicMaterial(material: RagIndexedMaterial): Material {
 export function getRagStats(store: Store) {
   const index = getIndex(store);
   const chunks = index.questions.length + index.snippets.length;
+  const existingPendingMaterials = store.data.materials.filter((material) => material.status === "pending" && fs.existsSync(material.path));
   return {
     materials: index.materials.length,
     indexedMaterials: index.materials.filter((material) => material.status === "indexed").length,
     needsConversionMaterials: index.materials.filter((material) => material.status === "needs_conversion").length,
     failedMaterials: index.materials.filter((material) => material.status === "failed").length,
     unsupportedMaterials: index.materials.filter((material) => material.status === "unsupported").length,
-    pendingMaterials: store.data.materials.filter((material) => material.status === "pending").length,
+    pendingMaterials: existingPendingMaterials.length,
     chunks,
     questions: index.questions.length,
     snippets: index.snippets.length,
@@ -725,7 +726,17 @@ export function listMaterialCatalog(store: Store, root = path.join(config.worksp
   const index = getIndex(store);
   const byId = new Map<string, Material>();
   for (const material of index.materials) byId.set(material.id, toPublicMaterial(material));
-  for (const material of store.data.materials) byId.set(material.id, { ...material, ...byId.get(material.id) });
+  for (const material of store.data.materials) {
+    if (!fs.existsSync(material.path) || byId.has(material.id)) continue;
+    byId.set(material.id, {
+      ...material,
+      status: "pending",
+      chunkCount: 0,
+      questionCount: 0,
+      snippetCount: 0,
+      error: "尚未用当前 RAG 索引版本解析。"
+    });
+  }
 
   const now = nowIso();
   for (const filePath of listMaterialCandidates(root)) {
