@@ -176,6 +176,10 @@ export interface RagQuestionRecord {
   formulaCount: number;
   imageCount: number;
   qualityWarnings: string[];
+  fingerprint: string;
+  duplicateClusterId: string;
+  isClusterRepresentative: boolean;
+  answerQuality: "none" | "answer_only" | "solution_steps" | "detailed_solution";
 }
 
 export type RagSourceKind = RagQuestionRecord["sourceKind"];

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import pdfParse from "pdf-parse";
 import JSZip from "jszip";
 import { config, materialRoot, uploadRoot } from "./config.js";
@@ -12,12 +13,14 @@ import { decodeUploadName, hashId, nowIso, sanitizeFilename } from "./store.js";
 
 const indexVersion = 3;
 const ragIndexPath = path.join(config.dataDir, "rag-index.json");
+const ragSqlitePath = path.join(config.dataDir, "rag-index.sqlite");
 const supportedExtensions = new Set([".md", ".markdown", ".txt", ".csv", ".docx", ".pdf", ".xlsx"]);
 const conversionExtensions = new Set([".doc"]);
 
 type RagMaterialStatus = Material["status"] | "needs_conversion";
 type RagSourceKind = "exam" | "mock" | "local" | "adapted" | "self_written" | "unknown";
 type RagSnippetKind = "knowledge" | "answer" | "metadata" | "chunk";
+type RagAnswerQuality = "none" | "answer_only" | "solution_steps" | "detailed_solution";
 
 interface RagIndexedMaterial {
   id: string;
@@ -60,6 +63,10 @@ export interface RagQuestionRecord {
   formulaCount: number;
   imageCount: number;
   qualityWarnings: string[];
+  fingerprint: string;
+  duplicateClusterId: string;
+  isClusterRepresentative: boolean;
+  answerQuality: RagAnswerQuality;
 }
 
 interface RagSnippetRecord {
@@ -83,6 +90,11 @@ interface RagIndexDb {
   materials: RagIndexedMaterial[];
   questions: RagQuestionRecord[];
   snippets: RagSnippetRecord[];
+}
+
+interface SqliteRagRow {
+  id: string;
+  payload: string;
 }
 
 export interface RagScoreParts {
@@ -188,6 +200,7 @@ const allKnownTags = [...stageTags, ...topicTags, ...questionTags, ...roleTags];
 
 let cachedIndex: RagIndexDb | null = null;
 let cachedSearchCache: SearchCache | null = null;
+let sqliteDb: DatabaseSync | null = null;
 
 function emptyIndex(): RagIndexDb {
   return {
@@ -205,6 +218,14 @@ function normalizeText(input: string) {
 
 function unique<T>(items: T[]) {
   return [...new Set(items)];
+}
+
+function jsonStringify(value: unknown) {
+  return JSON.stringify(value);
+}
+
+function jsonParse<T>(value: string): T {
+  return JSON.parse(value) as T;
 }
 
 export function tokenize(input: string) {
@@ -600,19 +621,169 @@ function readIndexFromDisk(): RagIndexDb | null {
   }
 }
 
+function getSqliteDb() {
+  if (sqliteDb) return sqliteDb;
+  fs.mkdirSync(path.dirname(ragSqlitePath), { recursive: true });
+  sqliteDb = new DatabaseSync(ragSqlitePath);
+  sqliteDb.exec(`
+    PRAGMA journal_mode = WAL;
+    PRAGMA synchronous = NORMAL;
+    CREATE TABLE IF NOT EXISTS meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS materials (
+      id TEXT PRIMARY KEY,
+      path TEXT NOT NULL,
+      status TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      mtimeMs REAL NOT NULL,
+      updatedAt TEXT NOT NULL,
+      payload TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS questions (
+      id TEXT PRIMARY KEY,
+      materialId TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      duplicateClusterId TEXT NOT NULL,
+      isClusterRepresentative INTEGER NOT NULL DEFAULT 1,
+      answerQuality TEXT NOT NULL DEFAULT 'none',
+      hasAnswer INTEGER NOT NULL DEFAULT 0,
+      sourceKind TEXT NOT NULL,
+      scorePriority REAL NOT NULL DEFAULT 0,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_questions_material ON questions(materialId);
+    CREATE INDEX IF NOT EXISTS idx_questions_fingerprint ON questions(fingerprint);
+    CREATE INDEX IF NOT EXISTS idx_questions_cluster ON questions(duplicateClusterId);
+    CREATE TABLE IF NOT EXISTS snippets (
+      id TEXT PRIMARY KEY,
+      materialId TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_snippets_material ON snippets(materialId);
+    CREATE VIRTUAL TABLE IF NOT EXISTS rag_fts USING fts5(
+      id UNINDEXED,
+      type UNINDEXED,
+      materialId UNINDEXED,
+      title,
+      body,
+      context,
+      tags,
+      tokenize='unicode61'
+    );
+  `);
+  const version = sqliteDb.prepare("SELECT value FROM meta WHERE key = 'version'").get() as { value: string } | undefined;
+  if (version?.value !== String(indexVersion)) {
+    sqliteDb.exec(`
+      DELETE FROM materials;
+      DELETE FROM questions;
+      DELETE FROM snippets;
+      DELETE FROM rag_fts;
+    `);
+    sqliteDb.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('version', ?)").run(String(indexVersion));
+    sqliteDb.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('updatedAt', ?)").run(nowIso());
+  }
+  return sqliteDb;
+}
+
+function sqliteUpdatedAt(db = getSqliteDb()) {
+  const row = db.prepare("SELECT value FROM meta WHERE key = 'updatedAt'").get() as { value: string } | undefined;
+  return row?.value || nowIso();
+}
+
+function setSqliteUpdatedAt(db = getSqliteDb()) {
+  const updatedAt = nowIso();
+  db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('updatedAt', ?)").run(updatedAt);
+  return updatedAt;
+}
+
+function readIndexFromSqlite(): RagIndexDb {
+  const db = getSqliteDb();
+  const materials = (db.prepare("SELECT payload FROM materials ORDER BY updatedAt DESC").all() as unknown as SqliteRagRow[]).map((row) =>
+    jsonParse<RagIndexedMaterial>(row.payload)
+  );
+  const questions = (db.prepare("SELECT payload FROM questions ORDER BY materialId, id").all() as unknown as SqliteRagRow[]).map((row) =>
+    jsonParse<RagQuestionRecord>(row.payload)
+  );
+  const snippets = (db.prepare("SELECT payload FROM snippets ORDER BY materialId, id").all() as unknown as SqliteRagRow[]).map((row) =>
+    jsonParse<RagSnippetRecord>(row.payload)
+  );
+  return {
+    version: indexVersion,
+    updatedAt: sqliteUpdatedAt(db),
+    materials,
+    questions,
+    snippets
+  };
+}
+
+function writeFullIndexToSqlite(index: RagIndexDb) {
+  const db = getSqliteDb();
+  const insertMaterial = db.prepare("INSERT INTO materials (id, path, status, size, mtimeMs, updatedAt, payload) VALUES (?, ?, ?, ?, ?, ?, ?)");
+  const insertQuestion = db.prepare(
+    "INSERT INTO questions (id, materialId, fingerprint, duplicateClusterId, isClusterRepresentative, answerQuality, hasAnswer, sourceKind, scorePriority, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  );
+  const insertSnippet = db.prepare("INSERT INTO snippets (id, materialId, kind, payload) VALUES (?, ?, ?, ?)");
+  const insertFts = db.prepare("INSERT INTO rag_fts (id, type, materialId, title, body, context, tags) VALUES (?, ?, ?, ?, ?, ?, ?)");
+  try {
+    db.exec("BEGIN");
+    db.exec("DELETE FROM materials; DELETE FROM questions; DELETE FROM snippets; DELETE FROM rag_fts;");
+    for (const material of index.materials) insertMaterial.run(material.id, material.path, material.status, material.size, material.mtimeMs, material.updatedAt, jsonStringify(material));
+    for (const question of index.questions) {
+      insertQuestion.run(
+        question.id,
+        question.materialId,
+        question.fingerprint || questionFingerprint(question.text),
+        question.duplicateClusterId || question.fingerprint || questionFingerprint(question.text),
+        question.isClusterRepresentative ? 1 : 0,
+        question.answerQuality || answerQualityForQuestion(question),
+        question.hasAnswer ? 1 : 0,
+        question.sourceKind,
+        questionPriority(question),
+        jsonStringify(question)
+      );
+      insertFts.run(question.id, "question", question.materialId, question.title, `${question.text}\n${question.solution}`, question.context, question.tags.join(" "));
+    }
+    for (const snippet of index.snippets) {
+      insertSnippet.run(snippet.id, snippet.materialId, snippet.kind, jsonStringify(snippet));
+      insertFts.run(snippet.id, "snippet", snippet.materialId, snippet.title, snippet.text, snippet.context, snippet.tags.join(" "));
+    }
+    setSqliteUpdatedAt(db);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function ensureSqliteSeeded() {
+  const db = getSqliteDb();
+  const count = db.prepare("SELECT COUNT(*) AS count FROM materials").get() as { count: number };
+  if (count.count > 0) return;
+  const legacy = readIndexFromDisk();
+  if (!legacy || legacy.materials.length === 0) return;
+  writeFullIndexToSqlite(rebuildDuplicateClusters(legacy));
+}
+
 function saveIndex(index: RagIndexDb) {
   index.version = indexVersion;
   index.updatedAt = nowIso();
+  index = rebuildDuplicateClusters(index);
+  writeFullIndexToSqlite(index);
   fs.mkdirSync(path.dirname(ragIndexPath), { recursive: true });
   const tmpPath = `${ragIndexPath}.${process.pid}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(index, null, 2), "utf8");
+  fs.writeFileSync(tmpPath, JSON.stringify({ version: index.version, updatedAt: index.updatedAt, sqlitePath: ragSqlitePath }, null, 2), "utf8");
   fs.renameSync(tmpPath, ragIndexPath);
+  cachedIndex = index;
   cachedSearchCache = null;
 }
 
 function getIndex(_store: Store) {
   if (cachedIndex) return cachedIndex;
-  cachedIndex = readIndexFromDisk() || emptyIndex();
+  ensureSqliteSeeded();
+  cachedIndex = readIndexFromSqlite();
   return cachedIndex;
 }
 
@@ -936,6 +1107,63 @@ function countMatches(text: string, pattern: RegExp) {
   return (text.match(pattern) || []).length;
 }
 
+function normalizeQuestionForFingerprint(text: string) {
+  return text
+    .replace(/(?:^|\n)\s*(?:[【[(（]?\s*)?(?:诊断自测|典例\s*\d+(?:[-－]\d+)?|例题?\s*\d+(?:[-－]\d+)?|变式\s*\d+(?:[-－]\d+)?|即学即练\s*\d+|练习\s*\d+(?:[-－]\d+)?|作业\s*\d+(?:[-－]\d+)?|\d{1,3}[.．、])(?:\s*[】\])）])?/g, "")
+    .replace(/（20\d{2}[^）]*）/g, "")
+    .replace(/答案[\s\S]*$/g, "")
+    .replace(/解析[\s\S]*$/g, "")
+    .replace(/\[图片\]/g, "[图]")
+    .replace(/\s+/g, "")
+    .replace(/[，。；：、,.!?！？]/g, "")
+    .toLowerCase()
+    .slice(0, 2000);
+}
+
+function questionFingerprint(text: string) {
+  const normalized = normalizeQuestionForFingerprint(text);
+  return hashId(normalized || text.slice(0, 500));
+}
+
+function answerQualityForQuestion(question: Pick<RagQuestionRecord, "answer" | "solution" | "hasAnswer">): RagAnswerQuality {
+  if (!question.hasAnswer && !question.solution) return "none";
+  if (question.solution.length > 260 && /因为|所以|由|解得|证明|故|步骤|法一|分析/.test(question.solution)) return "detailed_solution";
+  if (question.solution.length > 60) return "solution_steps";
+  return question.answer ? "answer_only" : "none";
+}
+
+function questionPriority(question: Pick<RagQuestionRecord, "title" | "path" | "hasAnswer" | "answerQuality" | "sourceKind" | "formulaCount" | "imageCount">) {
+  const answerScore = question.answerQuality === "detailed_solution" ? 45 : question.answerQuality === "solution_steps" ? 32 : question.answerQuality === "answer_only" ? 18 : 0;
+  const titlePath = `${question.title} ${question.path}`;
+  const versionScore = /解析版|教师版|答案|详解/.test(titlePath) ? 30 : /原卷版|学生版/.test(titlePath) ? -16 : 0;
+  const sourceScore = question.sourceKind === "exam" ? 10 : question.sourceKind === "mock" ? 6 : 0;
+  const qualityPenalty = question.formulaCount * 12 + question.imageCount * 2;
+  return answerScore + versionScore + sourceScore - qualityPenalty;
+}
+
+function rebuildDuplicateClusters(index: RagIndexDb): RagIndexDb {
+  const byFingerprint = new Map<string, RagQuestionRecord[]>();
+  for (const question of index.questions) {
+    question.fingerprint ||= questionFingerprint(question.text);
+    question.duplicateClusterId = question.fingerprint;
+    question.answerQuality = question.answerQuality || answerQualityForQuestion(question);
+    question.isClusterRepresentative = true;
+    const list = byFingerprint.get(question.fingerprint) || [];
+    list.push(question);
+    byFingerprint.set(question.fingerprint, list);
+  }
+
+  for (const [fingerprint, questions] of byFingerprint.entries()) {
+    const representative = [...questions].sort((a, b) => questionPriority(b) - questionPriority(a))[0];
+    for (const question of questions) {
+      question.duplicateClusterId = fingerprint;
+      question.isClusterRepresentative = question.id === representative.id;
+    }
+  }
+
+  return index;
+}
+
 function qualityWarningsForQuestion(text: string, formulaCount: number, imageCount: number) {
   const warnings: string[] = [];
   if (formulaCount > 0) warnings.push(`含${formulaCount}处公式占位，需看原文件核对`);
@@ -996,6 +1224,8 @@ function buildQuestionRecords(material: RagIndexedMaterial, text: string) {
       .join("；");
 
     const tokenText = `${context}\n${split.prompt}\n${split.solution}\n${tags.join(" ")}`;
+    const fingerprint = questionFingerprint(split.prompt);
+    const answerQuality = answerQualityForQuestion({ answer: split.answer, solution: split.solution, hasAnswer: Boolean(split.solution) });
     return {
       id: `${material.id}_q${index}`,
       materialId: material.id,
@@ -1019,7 +1249,11 @@ function buildQuestionRecords(material: RagIndexedMaterial, text: string) {
       hasAnswer: Boolean(split.solution),
       formulaCount,
       imageCount,
-      qualityWarnings
+      qualityWarnings,
+      fingerprint,
+      duplicateClusterId: fingerprint,
+      isClusterRepresentative: true,
+      answerQuality
     };
   });
 }
@@ -1193,6 +1427,9 @@ interface SearchUnit {
   hasAnswer: boolean;
   teachingRoles: string[];
   sourceKind: RagSourceKind;
+  duplicateClusterId?: string;
+  isClusterRepresentative: boolean;
+  answerQuality: RagAnswerQuality;
 }
 
 interface SearchCache {
@@ -1220,7 +1457,10 @@ function buildSearchUnits(index: RagIndexDb) {
       tokens: question.tokens,
       hasAnswer: question.hasAnswer,
       teachingRoles: question.teachingRoles,
-      sourceKind: question.sourceKind
+      sourceKind: question.sourceKind,
+      duplicateClusterId: question.duplicateClusterId,
+      isClusterRepresentative: question.isClusterRepresentative,
+      answerQuality: question.answerQuality
     });
   }
   for (const snippet of index.snippets) {
@@ -1239,7 +1479,9 @@ function buildSearchUnits(index: RagIndexDb) {
       tokens: snippet.tokens,
       hasAnswer: snippet.kind === "answer",
       teachingRoles: snippet.kind === "knowledge" ? ["知识参考"] : ["资料片段"],
-      sourceKind: detectSourceKind(snippet.title, snippet.path, snippet.text)
+      sourceKind: detectSourceKind(snippet.title, snippet.path, snippet.text),
+      isClusterRepresentative: true,
+      answerQuality: snippet.kind === "answer" ? "solution_steps" : "none"
     });
   }
   return units;
@@ -1293,6 +1535,45 @@ function collectCandidateUnits(cache: SearchCache, queryTokens: string[], queryT
     .filter(Boolean);
 }
 
+function ftsQuery(input: string) {
+  const terms = [
+    ...input.matchAll(/[a-zA-Z0-9_+\-*/^=<>.()]+/g),
+    ...input.matchAll(/[\u3400-\u9fff]{2,}/g)
+  ]
+    .map((match) => match[0].replace(/"/g, " ").trim())
+    .filter((term) => term.length >= 2)
+    .slice(0, 16);
+  return terms.length > 0 ? terms.map((term) => `"${term}"`).join(" OR ") : "";
+}
+
+function collectFtsCandidateIds(query: string, limit: number) {
+  const expression = ftsQuery(query);
+  if (!expression) return new Set<string>();
+  try {
+    const rows = getSqliteDb()
+      .prepare("SELECT id FROM rag_fts WHERE rag_fts MATCH ? ORDER BY rank LIMIT ?")
+      .all(expression, Math.max(200, limit * 80)) as Array<{ id: string }>;
+    return new Set(rows.map((row) => row.id));
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function dedupeSearchResults(results: RagSearchResult[], limit: number) {
+  const byCluster = new Map<string, RagSearchResult>();
+  const passthrough: RagSearchResult[] = [];
+  for (const result of results) {
+    const clusterId = result.question?.duplicateClusterId;
+    if (!clusterId) {
+      passthrough.push(result);
+      continue;
+    }
+    const previous = byCluster.get(clusterId);
+    if (!previous || result.score > previous.score) byCluster.set(clusterId, result);
+  }
+  return [...byCluster.values(), ...passthrough].sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
 export function searchRag(store: Store, query: string, limit = 8): RagSearchResult[] {
   const index = getIndex(store);
   const cache = getSearchCache(index);
@@ -1300,7 +1581,10 @@ export function searchRag(store: Store, query: string, limit = 8): RagSearchResu
   const queryTags = extractTags(query);
   if ((queryTokens.length === 0 && queryTags.length === 0) || cache.units.length === 0) return [];
 
-  const units = collectCandidateUnits(cache, queryTokens, queryTags, limit);
+  const ftsIds = collectFtsCandidateIds(query, limit);
+  const tokenUnits = collectCandidateUnits(cache, queryTokens, queryTags, limit);
+  const ftsUnits = ftsIds.size > 0 ? cache.units.filter((unit) => ftsIds.has(unit.id)) : [];
+  const units = unique([...ftsUnits, ...tokenUnits]);
   if (units.length === 0) return [];
   const idf = buildIdf(units, queryTokens);
   const queryNorm = vectorNorm(queryTokens, idf);
@@ -1343,7 +1627,7 @@ export function searchRag(store: Store, query: string, limit = 8): RagSearchResu
     });
   }
 
-  return results.sort((a, b) => b.score - a.score).slice(0, limit);
+  return dedupeSearchResults(results.sort((a, b) => b.score - a.score), limit);
 }
 
 interface UnitScoreInput {
@@ -1391,6 +1675,10 @@ function scoreUnit(unit: SearchUnit, input: UnitScoreInput) {
     (unit.sourceKind === "exam" && wantsExam ? 14 : 0) +
     (unit.sourceKind === "mock" && wantsExam ? 10 : 0) +
     (unit.teachingRoles.some((roleItem) => input.query.includes(roleItem)) ? 8 : 0);
+  const answerQualityScore =
+    unit.answerQuality === "detailed_solution" ? 18 : unit.answerQuality === "solution_steps" ? 12 : unit.answerQuality === "answer_only" ? 6 : 0;
+  const representativeScore = unit.type === "question" ? (unit.isClusterRepresentative ? 10 : -18) : 0;
+  const versionScore = /解析版|教师版|答案|详解/.test(`${unit.title} ${unit.path}`) ? 10 : /原卷版|学生版/.test(`${unit.title} ${unit.path}`) ? -6 : 0;
 
   const scoreParts: RagScoreParts = {
     lexical: cosine * 100,
@@ -1400,7 +1688,7 @@ function scoreUnit(unit: SearchUnit, input: UnitScoreInput) {
     tags: matchedTags.length * 12,
     role,
     phrase: phraseHit ? 20 : 0,
-    answer: unit.hasAnswer && wantsAnswer ? 12 : unit.hasAnswer && unit.type === "question" ? 4 : 0
+    answer: (unit.hasAnswer && wantsAnswer ? 12 : 0) + answerQualityScore + representativeScore + versionScore
   };
   const score = Object.values(scoreParts).reduce((sum, value) => sum + value, 0);
   return {
