@@ -276,12 +276,12 @@ async function startRagReindexJob(alreadyStarted = false) {
   }
 }
 
-async function startRagIncrementalJob() {
-  if (ragReindexJob.status === "running") {
+async function startRagIncrementalJob(alreadyStarted = false) {
+  if (ragReindexJob.status === "running" && !alreadyStarted) {
     ragIncrementalRequested = true;
     return;
   }
-  resetRagJob();
+  if (!alreadyStarted) resetRagJob();
   try {
     const failures: string[] = [];
     do {
@@ -834,7 +834,7 @@ app.post(
     if (ragReindexJob.status !== "running") {
       resetRagJob();
       setImmediate(() => {
-        void startRagReindexJob(true);
+        void startRagIncrementalJob(true);
       });
     }
     res.json({ job: publicRagReindexJob(), stats: getRagStats(store) });

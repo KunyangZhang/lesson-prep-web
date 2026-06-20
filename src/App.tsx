@@ -286,6 +286,10 @@ export default function App() {
     typeof window !== "undefined" && window.location.pathname === "/viewer"
       ? new URLSearchParams(window.location.search).get("path") || ""
       : "";
+  const materialPreviewId =
+    typeof window !== "undefined" && window.location.pathname === "/material-preview"
+      ? new URLSearchParams(window.location.search).get("id") || ""
+      : "";
 
   const loadStudents = useCallback(async () => {
     const data = await api.get<{ students: Student[] }>("/api/students");
@@ -368,6 +372,10 @@ export default function App() {
 
   if (viewerPath) {
     return <StandaloneViewer path={viewerPath} />;
+  }
+
+  if (materialPreviewId) {
+    return <StandaloneMaterialPreview materialId={materialPreviewId} />;
   }
 
   return (
@@ -556,6 +564,23 @@ function StandaloneViewer({ path }: { path: string }) {
           updatedAt: ""
         }}
       />
+    </main>
+  );
+}
+
+function StandaloneMaterialPreview({ materialId }: { materialId: string }) {
+  return (
+    <main className="viewer-page">
+      <header className="viewer-header">
+        <div>
+          <p className="eyebrow">RAG 预览</p>
+          <h1>索引后的题目与片段</h1>
+        </div>
+        <a className="ghost-link" href="/">
+          返回工作台
+        </a>
+      </header>
+      <MaterialRagPreview materialId={materialId} />
     </main>
   );
 }
@@ -1958,7 +1983,6 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
   const [uploadNotice, setUploadNotice] = useState("");
   const [uploadRoot, setUploadRoot] = useState("");
   const [currentPath, setCurrentPath] = useState("");
-  const [selectedMaterialId, setSelectedMaterialId] = useState("");
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<RagSearchResult[]>([]);
   const [busy, setBusy] = useState(false);
@@ -2079,10 +2103,6 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
   const questionCount = useMemo(() => materials.reduce((sum, material) => sum + (material.questionCount || 0), 0), [materials]);
   const snippetCount = useMemo(() => materials.reduce((sum, material) => sum + (material.snippetCount || 0), 0), [materials]);
   const browserEntries = useMemo(() => buildMaterialEntries(materials, uploadRoot, currentPath), [materials, uploadRoot, currentPath]);
-  const selectedMaterial = useMemo(
-    () => materials.find((material) => material.id === selectedMaterialId) || browserEntries.find((entry) => entry.kind === "file")?.material || null,
-    [browserEntries, materials, selectedMaterialId]
-  );
 
   return (
     <section className="materials-view">
@@ -2095,7 +2115,7 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
         <div className="header-actions">
           <button className="ghost-button" onClick={reindex} disabled={busy}>
             {busy ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
-            一键索引全库
+            增量索引资料库
           </button>
           <button className="ghost-button" onClick={showDocConversionNotice}>
             <FileText size={16} />
@@ -2137,11 +2157,11 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
           <div>
             <strong>
               {reindexJob.status === "running"
-                ? "正在索引全库"
+                ? "正在增量索引"
                 : reindexJob.status === "completed"
-                ? "全库索引完成"
+                ? "增量索引完成"
                 : reindexJob.status === "failed"
-                ? "全库索引失败"
+                ? "增量索引失败"
                 : "索引待命"}
             </strong>
             <small>
@@ -2259,14 +2279,16 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
                     ? "待索引"
                     : entry.material.status}
                   </span>
-                  <button
+                  <a
                     className="icon-button"
                     title="预览 RAG 内容"
                     aria-label="预览 RAG 内容"
-                    onClick={() => setSelectedMaterialId(entry.material.id)}
+                    href={`/material-preview?id=${encodeURIComponent(entry.material.id)}`}
+                    target="_blank"
+                    rel="noreferrer"
                   >
                     <Eye size={15} />
-                  </button>
+                  </a>
                   <a className="icon-button" title="新页面打开" aria-label="新页面打开" href={`/viewer?path=${encodeURIComponent(entry.material.path)}`} target="_blank" rel="noreferrer">
                     <ExternalLink size={15} />
                   </a>
@@ -2285,8 +2307,6 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
           ))
         )}
       </section>
-
-      <MaterialRagPreview material={selectedMaterial} />
     </section>
   );
 }
@@ -2320,43 +2340,45 @@ interface MaterialRagPreviewData {
   snippets: NonNullable<RagSearchResult["snippet"]>[];
 }
 
-function MaterialRagPreview({ material }: { material: Material | null }) {
+function MaterialRagPreview({ materialId }: { materialId: string }) {
   const [preview, setPreview] = useState<MaterialRagPreviewData | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
     setPreview(null);
     setError("");
-    if (!material) return;
+    if (!materialId) return;
     api
-      .get<MaterialRagPreviewData>(`/api/materials/${material.id}/preview`)
+      .get<MaterialRagPreviewData>(`/api/materials/${materialId}/preview`)
       .then((data) => setPreview(data))
       .catch((err) => setError(err.message));
-  }, [material]);
+  }, [materialId]);
 
-  if (!material) {
+  if (!materialId) {
     return (
       <section className="preview-panel empty-preview">
         <FileText size={26} />
-        <h4>请选择资料查看 RAG 内容</h4>
+        <h4>缺少资料 ID</h4>
       </section>
     );
   }
 
+  const material = preview?.material;
+
   return (
     <section className="preview-panel material-rag-preview">
       <div className="preview-title">
-        <strong>{material.title}</strong>
+        <strong>{material?.title || "正在读取资料"}</strong>
         <span className="preview-actions">
-          <a href={`/viewer?path=${encodeURIComponent(material.path)}`} target="_blank" rel="noreferrer">
+          {material ? <a href={`/viewer?path=${encodeURIComponent(material.path)}`} target="_blank" rel="noreferrer">
             原文件
-          </a>
+          </a> : null}
         </span>
       </div>
       {error ? <p className="form-error">{error}</p> : null}
       {!preview ? <div className="quiet-empty">正在读取 RAG 内容...</div> : null}
       {preview && preview.questions.length === 0 && preview.snippets.length === 0 ? (
-        <div className="quiet-empty">{material.status === "pending" ? "这个文件尚未索引。" : "这个文件没有可预览的 RAG 题目或片段。"}</div>
+        <div className="quiet-empty">{preview.material.status === "pending" ? "这个文件尚未索引。" : "这个文件没有可预览的 RAG 题目或片段。"}</div>
       ) : null}
       {preview?.questions.map((question) => (
         <article key={question.id} className="rag-preview-item">
