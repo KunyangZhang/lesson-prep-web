@@ -22,12 +22,13 @@ import { onJobFinished } from "./jobEvents.js";
 import { cancelCodexJob, createCodexJob, recoverInterruptedJobs, runCodexJob } from "./jobs.js";
 import { assessCourseQuality } from "./quality.js";
 import {
+  clearMaterialRootIndex,
   clearRagIndexCache,
   deleteMaterialFile,
   deleteMaterialFolder,
   getRagStats,
   indexMaterialFile,
-  listMaterialFilesNeedingIndex,
+  listMaterialCandidates,
   markMaterialIndexFailed,
   registerMaterialFile,
   searchRag
@@ -220,7 +221,11 @@ async function startRagReindexJob() {
   try {
     store.reload();
     clearRagIndexCache();
-    const candidates = listMaterialFilesNeedingIndex(store, path.join(config.workspaceRoot, "资料库"));
+    const materialRoot = path.join(config.workspaceRoot, "资料库");
+    const candidates = listMaterialCandidates(materialRoot);
+    clearMaterialRootIndex(store, materialRoot);
+    store.reload();
+    clearRagIndexCache();
     ragReindexJob.total = candidates.length;
     const failures: string[] = [];
     for (const filePath of candidates) {
@@ -262,7 +267,9 @@ app.get("/api/system", (req, res) => {
     workspaceRoot: config.workspaceRoot,
     codexAutoRun: config.codexAutoRun,
     codexRunner: config.codexRunner,
-    ragChunkCount: ragStats.chunks
+    ragChunkCount: ragStats.chunks,
+    ragQuestionCount: ragStats.questions,
+    ragSnippetCount: ragStats.snippets
   });
 });
 

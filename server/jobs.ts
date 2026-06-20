@@ -122,10 +122,37 @@ ${issueLines}
 `.trim();
 }
 
+function formatRagResult(result: ReturnType<typeof buildRagPlan>["selected"][number], index: number) {
+  const question = result.question;
+  const sourceText = question
+    ? [
+        `题号：${question.questionNumber || question.label}`,
+        `来源状态：${question.sourceKind}`,
+        question.examSource ? `考试来源：${question.examSource}` : "",
+        `题型：${question.questionType}`,
+        `难度：${question.difficulty}`,
+        `教学角色：${question.teachingRoles.join("、")}`,
+        question.hasAnswer ? "答案解析：有" : "答案解析：未检测到，需独立验算"
+      ]
+        .filter(Boolean)
+        .join("；")
+    : `资料片段：${result.snippet?.kind || "reference"}`;
+  return [
+    `【候选 ${index + 1}】${result.material.title}`,
+    `路径：${toRunnerPath(result.material.path)}`,
+    `相关度：${result.score}`,
+    `命中原因：${result.reason}`,
+    `匹配标签：${result.matchedTags.length > 0 ? result.matchedTags.join("、") : "[无]"}`,
+    sourceText,
+    question ? `题面摘录：${result.excerpt}` : `参考摘录：${result.excerpt}`
+  ].join("\n");
+}
+
 export function buildCodexPrompt(store: Store, student: Student, course: Course, options: CodexJobOptions = {}) {
   const skillDir = packagedSkillDir(course.type);
   const skillMd = path.join(skillDir, "SKILL.md");
   const ragPlan = buildRagPlan(store, course, 8);
+  const pool = ragPlan.candidatePool;
   const ragContext =
     ragPlan.selected.length === 0
       ? "本地 RAG 暂无命中资料。仍需按 skill 要求搜索本地资料库和可靠网页来源。"
@@ -133,18 +160,20 @@ export function buildCodexPrompt(store: Store, student: Student, course: Course,
           `检索查询：${ragPlan.query || "[空]"}`,
           `意图标签：${ragPlan.intentTags.length > 0 ? ragPlan.intentTags.join("、") : "[未识别]"}`,
           "",
-          "入选资料：",
-          ...ragPlan.selected.map((result, index) => {
-            return [
-              `【RAG ${index + 1}】${result.material.title}`,
-              `路径：${toRunnerPath(result.material.path)}`,
-              `相关度：${result.score}`,
-              `命中原因：${result.reason}`,
-              `匹配标签：${result.matchedTags.length > 0 ? result.matchedTags.join("、") : "[无]"}`,
-              "关键摘录：",
-              ...result.chunks.map((item, chunkIndex) => `- 摘录 ${chunkIndex + 1}（${item.score}）：${item.excerpt}`)
-            ].join("\n");
-          }),
+          "候选题池 - 可直接上课：",
+          ...(pool.direct.length > 0 ? pool.direct.map(formatRagResult) : ["[无]"]),
+          "",
+          "候选题池 - 可改编为变式/巩固：",
+          ...(pool.variants.length > 0 ? pool.variants.map(formatRagResult) : ["[无]"]),
+          "",
+          "候选题池 - 可做作业：",
+          ...(pool.homework.length > 0 ? pool.homework.map(formatRagResult) : ["[无]"]),
+          "",
+          "候选资料 - 知识点/解析参考：",
+          ...(pool.reference.length > 0 ? pool.reference.map(formatRagResult) : ["[无]"]),
+          "",
+          "综合入选候选：",
+          ...ragPlan.selected.map(formatRagResult),
           ragPlan.rejected.length > 0
             ? [
                 "",

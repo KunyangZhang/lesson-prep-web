@@ -138,7 +138,6 @@ export function createDiagnostics(store: Store) {
       codexRunner: config.codexRunner,
       codexAutoRun: config.codexAutoRun,
       maxUploadFiles: config.maxUploadFiles,
-      ragMaxReindexFiles: config.ragMaxReindexFiles,
       trustProxy: config.trustProxy,
       secureCookies: config.secureCookies,
       enableHsts: config.enableHsts,
@@ -153,7 +152,9 @@ export function createDiagnostics(store: Store) {
       runningJobs: store.data.jobs.filter((job) => job.status === "running" || job.status === "queued").length,
       materials: ragStats.materials,
       indexedMaterials: ragStats.indexedMaterials,
-      ragChunks: ragStats.chunks
+      ragChunks: ragStats.chunks,
+      ragQuestions: ragStats.questions,
+      ragSnippets: ragStats.snippets
     },
     checks
   };

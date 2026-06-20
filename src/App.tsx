@@ -37,7 +37,7 @@ import {
   UserRound
 } from "lucide-react";
 import { api } from "./api";
-import type { Course, CourseFile, Diagnostics, DiagnosticStatus, Job, Material, RagReindexJob, RagSearchResult, Student, SystemInfo, User } from "./types";
+import type { Course, CourseFile, Diagnostics, DiagnosticStatus, Job, Material, RagReindexJob, RagSearchResult, RagSourceKind, Student, SystemInfo, User } from "./types";
 
 type View = "students" | "materials";
 
@@ -791,7 +791,7 @@ function DiagnosticsPanel({ diagnostics }: { diagnostics: Diagnostics }) {
         <span>学生 {diagnostics.counts.students}</span>
         <span>课程 {diagnostics.counts.courses}</span>
         <span>资料 {diagnostics.counts.indexedMaterials}/{diagnostics.counts.materials}</span>
-        <span>RAG {diagnostics.counts.ragChunks}</span>
+        <span>RAG 题 {diagnostics.counts.ragQuestions ?? 0}</span>
         <span>任务 {diagnostics.counts.runningJobs}/{diagnostics.counts.jobs}</span>
       </div>
       <div className="diagnostics-list">
@@ -2074,6 +2074,8 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
   }
 
   const indexedCount = useMemo(() => materials.filter((material) => material.status === "indexed").length, [materials]);
+  const questionCount = useMemo(() => materials.reduce((sum, material) => sum + (material.questionCount || 0), 0), [materials]);
+  const snippetCount = useMemo(() => materials.reduce((sum, material) => sum + (material.snippetCount || 0), 0), [materials]);
   const browserEntries = useMemo(() => buildMaterialEntries(materials, uploadRoot, currentPath), [materials, uploadRoot, currentPath]);
 
   return (
@@ -2114,8 +2116,13 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
         </div>
         <div>
           <FileText size={18} />
-          <strong>{chunkCount}</strong>
-          <span>资料片段</span>
+          <strong>{questionCount}</strong>
+          <span>题目记录</span>
+        </div>
+        <div>
+          <BookOpen size={18} />
+          <strong>{snippetCount}</strong>
+          <span>参考片段</span>
         </div>
       </div>
 
@@ -2161,8 +2168,25 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
         <section className="rag-results">
           {results.map((result) => (
             <article key={result.chunk.id} className="result-item">
-              <strong>{result.material.title}</strong>
+              <strong>
+                {result.question ? `${result.question.questionNumber || result.question.label} · ` : ""}
+                {result.material.title}
+              </strong>
               <small>{result.material.path}</small>
+              {result.question ? (
+                <div className="result-meta">
+                  <span>{sourceKindLabel(result.question.sourceKind)}</span>
+                  <span>{result.question.questionType}</span>
+                  <span>难度：{result.question.difficulty}</span>
+                  <span>{result.question.hasAnswer ? "有解析" : "需验算"}</span>
+                  {result.question.examSource ? <span>{result.question.examSource}</span> : null}
+                </div>
+              ) : result.snippet ? (
+                <div className="result-meta">
+                  <span>{result.snippet.kind}</span>
+                  <span>知识参考</span>
+                </div>
+              ) : null}
               <span className="result-reason">{result.reason}</span>
               <p>{result.excerpt}</p>
             </article>
@@ -2222,7 +2246,7 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
                 <div className="material-actions">
                   <span className={entry.material.status === "indexed" ? "status status-completed" : "status status-failed"}>
                     {entry.material.status === "indexed"
-                    ? `${entry.material.chunkCount} 段`
+                    ? `${entry.material.questionCount || 0} 题 · ${entry.material.snippetCount || 0} 段`
                     : entry.material.status === "needs_conversion"
                     ? "待转换"
                     : entry.material.status === "pending"
@@ -2246,6 +2270,18 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
       </section>
     </section>
   );
+}
+
+function sourceKindLabel(kind: RagSourceKind) {
+  const labels: Record<string, string> = {
+    exam: "真题",
+    mock: "模考",
+    local: "本地题",
+    adapted: "改编题",
+    self_written: "自编题",
+    unknown: "来源未分类"
+  };
+  return labels[String(kind)] || String(kind);
 }
 
 function normalizePathSeparators(value: string) {

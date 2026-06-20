@@ -1124,6 +1124,22 @@ textarea:focus {
   word-break: break-all;
 }
 
+.result-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 2px;
+}
+
+.result-meta span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.2;
+  padding: 3px 8px;
+}
+
 .result-item p {
   margin: 8px 0 0;
   color: #33433e;

@@ -97,6 +97,8 @@ export interface Material {
   mimeType?: string;
   status: "indexed" | "failed" | "unsupported" | "needs_conversion" | "pending";
   chunkCount: number;
+  questionCount?: number;
+  snippetCount?: number;
   error?: string;
   createdAt: string;
   updatedAt: string;

@@ -4,6 +4,8 @@ export interface SystemInfo {
   codexAutoRun: boolean;
   codexRunner: "local" | "ssh";
   ragChunkCount: number;
+  ragQuestionCount?: number;
+  ragSnippetCount?: number;
 }
 
 export type DiagnosticStatus = "ok" | "warn" | "fail";
@@ -27,7 +29,6 @@ export interface Diagnostics {
     codexRunner: "local" | "ssh";
     codexAutoRun: boolean;
     maxUploadFiles: number;
-    ragMaxReindexFiles: number;
     trustProxy: boolean;
     secureCookies: boolean;
     enableHsts: boolean;
@@ -43,6 +44,8 @@ export interface Diagnostics {
     materials: number;
     indexedMaterials: number;
     ragChunks: number;
+    ragQuestions?: number;
+    ragSnippets?: number;
   };
   checks: DiagnosticItem[];
 }
@@ -142,10 +145,37 @@ export interface Material {
   mimeType?: string;
   status: "indexed" | "failed" | "unsupported" | "needs_conversion" | "pending";
   chunkCount: number;
+  questionCount?: number;
+  snippetCount?: number;
   error?: string;
   createdAt: string;
   updatedAt: string;
 }
+
+export interface RagQuestionRecord {
+  id: string;
+  materialId: string;
+  path: string;
+  title: string;
+  index: number;
+  label: string;
+  questionNumber: string;
+  text: string;
+  answer: string;
+  solution: string;
+  context: string;
+  sourceKind: "exam" | "mock" | "local" | "adapted" | "self_written" | "unknown";
+  examSource: string;
+  questionType: string;
+  difficulty: string;
+  teachingRoles: string[];
+  knowledgeTags: string[];
+  tags: string[];
+  tokens: string[];
+  hasAnswer: boolean;
+}
+
+export type RagSourceKind = RagQuestionRecord["sourceKind"];
 
 export interface RagSearchResult {
   score: number;
@@ -153,6 +183,19 @@ export interface RagSearchResult {
   matchedTags: string[];
   reason: string;
   material: Material & { tags?: string[] };
+  question?: RagQuestionRecord;
+  snippet?: {
+    id: string;
+    materialId: string;
+    path: string;
+    title: string;
+    index: number;
+    kind: "knowledge" | "answer" | "metadata" | "chunk";
+    text: string;
+    context: string;
+    tags: string[];
+    tokens: string[];
+  };
   chunks: Array<{
     chunk: {
       id: string;
@@ -164,6 +207,7 @@ export interface RagSearchResult {
       tokens: string[];
       tags?: string[];
       summary?: string;
+      context?: string;
     };
     excerpt: string;
     score: number;
@@ -178,6 +222,7 @@ export interface RagSearchResult {
     tokens: string[];
     tags?: string[];
     summary?: string;
+    context?: string;
   };
   excerpt: string;
 }
