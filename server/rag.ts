@@ -1,6 +1,7 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import mammoth from "mammoth";
+import { spawnSync } from "node:child_process";
 import pdfParse from "pdf-parse";
 import JSZip from "jszip";
 import { config, materialRoot, uploadRoot } from "./config.js";
@@ -9,7 +10,7 @@ import type { Course, Material, RagChunk } from "./types.js";
 import type { Store } from "./store.js";
 import { decodeUploadName, hashId, nowIso, sanitizeFilename } from "./store.js";
 
-const indexVersion = 2;
+const indexVersion = 3;
 const ragIndexPath = path.join(config.dataDir, "rag-index.json");
 const supportedExtensions = new Set([".md", ".markdown", ".txt", ".csv", ".docx", ".pdf", ".xlsx"]);
 const conversionExtensions = new Set([".doc"]);
@@ -56,6 +57,9 @@ export interface RagQuestionRecord {
   tags: string[];
   tokens: string[];
   hasAnswer: boolean;
+  formulaCount: number;
+  imageCount: number;
+  qualityWarnings: string[];
 }
 
 interface RagSnippetRecord {
@@ -69,6 +73,8 @@ interface RagSnippetRecord {
   context: string;
   tags: string[];
   tokens: string[];
+  formulaCount: number;
+  imageCount: number;
 }
 
 interface RagIndexDb {
@@ -302,25 +308,227 @@ function chunkText(text: string) {
 async function extractText(filePath: string) {
   const ext = path.extname(filePath).toLowerCase();
   if ([".md", ".markdown", ".txt", ".csv"].includes(ext)) {
-    return fs.promises.readFile(filePath, "utf8");
+    return { text: await fs.promises.readFile(filePath, "utf8"), formulaCount: 0, imageCount: 0 };
   }
 
   if (ext === ".docx") {
-    const result = await mammoth.extractRawText({ path: filePath });
-    return result.value;
+    return extractDocxText(filePath);
   }
 
   if (ext === ".pdf") {
     const buffer = await fs.promises.readFile(filePath);
     const result = await pdfParse(buffer);
-    return result.text;
+    return { text: result.text, formulaCount: 0, imageCount: 0 };
   }
 
   if (ext === ".xlsx") {
-    return extractXlsxText(filePath);
+    return { text: await extractXlsxText(filePath), formulaCount: 0, imageCount: 0 };
   }
 
   throw new Error(`Unsupported file type: ${ext || "unknown"}`);
+}
+
+async function extractDocxText(filePath: string) {
+  const zip = await JSZip.loadAsync(await fs.promises.readFile(filePath));
+  const documentXml = await zip.file("word/document.xml")?.async("text");
+  if (!documentXml) return { text: "", formulaCount: 0, imageCount: 0 };
+
+  const relsXml = await zip.file("word/_rels/document.xml.rels")?.async("text");
+  const relationships = parseDocxRelationships(relsXml || "");
+  const oleTargets = unique(
+    [...documentXml.matchAll(/<o:OLEObject\b[^>]*\/?>/g)]
+      .map((match) => xmlAttr(match[0], "r:id"))
+      .map((relId) => (relId ? relationships.get(relId) : undefined))
+      .filter((target): target is string => Boolean(target))
+  );
+  const formulaByTarget = await convertMathTypeTargets(zip, oleTargets);
+
+  let formulaCount = 0;
+  let imageCount = 0;
+
+  function renderFormula(fragment: string) {
+    const relId = xmlAttr(fragment, "r:id");
+    const target = relId ? relationships.get(relId) : undefined;
+    const formula = target ? formulaByTarget.get(target) : "";
+    formulaCount += 1;
+    return formula && formula !== "[公式]" ? ` ${formula} ` : " [公式] ";
+  }
+
+  function renderPict(fragment: string) {
+    if (/<o:OLEObject\b/.test(fragment)) {
+      const oleMatch = fragment.match(/<o:OLEObject\b[^>]*\/?>/);
+      return oleMatch ? renderFormula(oleMatch[0]) : " [公式] ";
+    }
+    if (/<v:imagedata\b|<a:blip\b/.test(fragment)) {
+      imageCount += 1;
+      return " [图片] ";
+    }
+    return "";
+  }
+
+  const paragraphs = [...documentXml.matchAll(/<w:p\b[\s\S]*?<\/w:p>/g)].map((match) => match[0]);
+  const lines = paragraphs.map((paragraph) => {
+    let line = "";
+    const tokenPattern =
+      /<w:r\b[\s\S]*?<\/w:r>|<w:t\b[^>]*>([\s\S]*?)<\/w:t>|<m:t\b[^>]*>([\s\S]*?)<\/m:t>|<m:chr\b[^>]*\/?>|<w:tab\b[^>]*\/?>|<w:br\b[^>]*\/?>|<w:cr\b[^>]*\/?>|<w:pict\b[\s\S]*?<\/w:pict>|<w:drawing\b[\s\S]*?<\/w:drawing>|<o:OLEObject\b[^>]*\/?>|<v:imagedata\b[^>]*\/?>|<a:blip\b[^>]*\/?>/g;
+    const matches = [...paragraph.matchAll(tokenPattern)];
+    for (let index = 0; index < matches.length; index += 1) {
+      const match = matches[index];
+      const token = match[0];
+      const nextToken = matches[index + 1]?.[0] || "";
+      if (token.startsWith("<w:r")) line += renderRun(token, nextToken);
+      else if (match[1] !== undefined) line += xmlDecode(match[1]);
+      else if (match[2] !== undefined) line += xmlDecode(match[2]);
+      else if (token.startsWith("<m:chr")) line += xmlAttr(token, "m:val");
+      else if (token.startsWith("<w:tab")) line += " ";
+      else if (token.startsWith("<w:br") || token.startsWith("<w:cr")) line += "\n";
+      else if (token.startsWith("<w:pict")) line += renderPict(token);
+      else if (token.startsWith("<o:OLEObject")) line += renderFormula(token);
+      else if (token.startsWith("<w:drawing") || token.startsWith("<v:imagedata") || token.startsWith("<a:blip")) {
+        if (isFormulaPreviewImage(token, nextToken)) continue;
+        imageCount += 1;
+        line += " [图片] ";
+      }
+    }
+    return normalizeExtractedText(line);
+  });
+
+  const text = normalizeExtractedText(lines.filter(Boolean).join("\n"));
+  return { text, formulaCount, imageCount };
+
+  function renderRun(runXml: string, nextToken: string) {
+    let content = "";
+    let hasNonText = false;
+    const tokenPattern =
+      /<w:t\b[^>]*>([\s\S]*?)<\/w:t>|<m:t\b[^>]*>([\s\S]*?)<\/m:t>|<m:chr\b[^>]*\/?>|<w:tab\b[^>]*\/?>|<w:br\b[^>]*\/?>|<w:cr\b[^>]*\/?>|<w:pict\b[\s\S]*?<\/w:pict>|<w:drawing\b[\s\S]*?<\/w:drawing>|<o:OLEObject\b[^>]*\/?>|<v:imagedata\b[^>]*\/?>|<a:blip\b[^>]*\/?>/g;
+    const matches = [...runXml.matchAll(tokenPattern)];
+    for (let index = 0; index < matches.length; index += 1) {
+      const match = matches[index];
+      const token = match[0];
+      const nextInnerToken = matches[index + 1]?.[0] || nextToken;
+      if (match[1] !== undefined) content += xmlDecode(match[1]);
+      else if (match[2] !== undefined) content += xmlDecode(match[2]);
+      else if (token.startsWith("<m:chr")) content += xmlAttr(token, "m:val");
+      else if (token.startsWith("<w:tab")) content += " ";
+      else if (token.startsWith("<w:br") || token.startsWith("<w:cr")) content += "\n";
+      else if (token.startsWith("<w:pict")) {
+        hasNonText = true;
+        content += renderPict(token);
+      } else if (token.startsWith("<o:OLEObject")) {
+        hasNonText = true;
+        content += renderFormula(token);
+      } else if (token.startsWith("<w:drawing") || token.startsWith("<v:imagedata") || token.startsWith("<a:blip")) {
+        hasNonText = true;
+        if (isFormulaPreviewImage(token, nextInnerToken)) continue;
+        imageCount += 1;
+        content += " [图片] ";
+      }
+    }
+
+    if (hasNonText) return content;
+    if (/<w:vertAlign\b[^>]*(?:w:val|val)="superscript"/.test(runXml)) return toScriptText(content, "^");
+    if (/<w:vertAlign\b[^>]*(?:w:val|val)="subscript"/.test(runXml)) return toScriptText(content, "_");
+    return content;
+  }
+}
+
+function isFormulaPreviewImage(token: string, nextToken: string) {
+  return /<o:OLEObject\b/.test(nextToken) && /(?:<w:drawing\b|<v:imagedata\b|<a:blip\b)/.test(token);
+}
+
+function toScriptText(value: string, marker: "^" | "_") {
+  if (!value.trim()) return value;
+  const leading = value.match(/^\s*/)?.[0] || "";
+  const trailing = value.match(/\s*$/)?.[0] || "";
+  return `${leading}${marker}(${value.trim()})${trailing}`;
+}
+
+function xmlAttr(tag: string, name: string) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = tag.match(new RegExp(`\\s${escaped}="([^"]*)"`)) || tag.match(new RegExp(`\\s${escaped}='([^']*)'`));
+  return match ? xmlDecode(match[1]) : "";
+}
+
+function normalizeDocxTarget(target: string) {
+  if (!target || /^[a-z]+:/i.test(target)) return "";
+  const normalized = target.startsWith("/")
+    ? path.posix.normalize(target.replace(/^\/+/, ""))
+    : path.posix.normalize(path.posix.join("word", target));
+  return normalized.replace(/^\.\//, "");
+}
+
+function parseDocxRelationships(xml: string) {
+  const relationships = new Map<string, string>();
+  for (const match of xml.matchAll(/<Relationship\b[^>]*\/?>/g)) {
+    const tag = match[0];
+    const id = xmlAttr(tag, "Id");
+    const target = normalizeDocxTarget(xmlAttr(tag, "Target"));
+    if (id && target) relationships.set(id, target);
+  }
+  return relationships;
+}
+
+async function convertMathTypeTargets(zip: JSZip, targets: string[]) {
+  const formulas = new Map<string, string>();
+  if (targets.length === 0) return formulas;
+
+  const scriptPath = path.join(config.projectRoot, "scripts", "mathtype_to_text.rb");
+  if (!fs.existsSync(scriptPath)) return formulas;
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "lesson-prep-mathtype-"));
+  try {
+    const tempFiles: string[] = [];
+    const tempTargets: string[] = [];
+    for (const target of targets) {
+      const file = zip.file(target);
+      if (!file) continue;
+      const tempFile = path.join(tempDir, `${tempFiles.length}.bin`);
+      fs.writeFileSync(tempFile, await file.async("nodebuffer"));
+      tempFiles.push(tempFile);
+      tempTargets.push(target);
+    }
+    if (tempFiles.length === 0) return formulas;
+
+    const result = spawnSync("ruby", [scriptPath, ...tempFiles], {
+      cwd: config.projectRoot,
+      encoding: "utf8",
+      env: { ...process.env, RUBYOPT: "-W0" },
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: 120_000
+    });
+    if (result.error) return formulas;
+
+    const lines = (result.stdout || "").split(/\r?\n/);
+    tempTargets.forEach((target, index) => {
+      const formula = normalizeFormulaText(lines[index] || "");
+      formulas.set(target, formula || "[公式]");
+    });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+  return formulas;
+}
+
+function normalizeFormulaText(value: string) {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/\^\('\)/g, "'")
+    .replace(/\^\((\d+)\)/g, "^$1")
+    .replace(/_\(([^)]+)\)/g, "_$1")
+    .replace(/\s*([=<>+\-*/^(),，。；：、])\s*/g, "$1")
+    .trim();
+}
+
+function normalizeExtractedText(value: string) {
+  return value
+    .replace(/\r/g, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\s+([，。；：、？！,.!?;:）\]\}])/g, "$1")
+    .replace(/([（\[\{])\s+/g, "$1")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function xmlDecode(value: string) {
@@ -706,11 +914,33 @@ function splitQuestionAnswer(block: string) {
 
 function questionMarkers(text: string) {
   const pattern =
-    /(?:^|\n)\s*(?:[【[(（]?\s*)((?:第\s*[一二三四五六七八九十百\d]+\s*题)|(?:例题?\s*[一二三四五六七八九十百\d]+)|(?:变式\s*[一二三四五六七八九十百\d]+)|(?:练习\s*[一二三四五六七八九十百\d]+)|(?:作业\s*[一二三四五六七八九十百\d]+)|(?:\d{1,3}[.．、]\s*)|(?:[①②③④⑤⑥⑦⑧⑨⑩]))(?:\s*[】\])）])?/g;
+    /(?:^|\n)\s*(?:[【[(（]?\s*)((?:诊断自测)|(?:典例\s*\d+(?:[-－]\d+)?)|(?:例题?\s*\d+(?:[-－]\d+)?)|(?:变式\s*\d+(?:[-－]\d+)?)|(?:即学即练\s*\d+)|(?:练习\s*\d+(?:[-－]\d+)?)|(?:作业\s*\d+(?:[-－]\d+)?)|(?:第\s*[一二三四五六七八九十百\d]+\s*题)|(?:\d{1,3}[.．]\s*))(?:\s*[】\])）])?/g;
   return [...text.matchAll(pattern)].map((match) => ({
     label: match[1].trim().replace(/\s+/g, ""),
     start: match.index || 0
   }));
+}
+
+function countMatches(text: string, pattern: RegExp) {
+  return (text.match(pattern) || []).length;
+}
+
+function qualityWarningsForQuestion(text: string, formulaCount: number, imageCount: number) {
+  const warnings: string[] = [];
+  if (formulaCount > 0) warnings.push(`含${formulaCount}处公式占位，需看原文件核对`);
+  if (imageCount > 0) warnings.push(`含${imageCount}处图片，需看原文件核对`);
+  if (/A．\s*B．|A．\s*C．|A．\s*D．|已知[，,。；;]|函数[，,。；;]|若[，,。；;]/.test(text)) warnings.push("疑似公式数据缺失");
+  if (/目录|方法技巧与总结|题型归纳总结|知识点\d*[:：]|题型[一二三四五六七八九十]/.test(text.slice(0, 120))) warnings.push("疑似目录或知识点说明");
+  return warnings;
+}
+
+function isLikelyQuestionBlock(label: string, block: string) {
+  const head = block.slice(0, 260);
+  if (/^(?:[①②③④⑤⑥⑦⑧⑨⑩]|知识点|方法技巧|题型归纳|目录|考点|能力拓展)/.test(head.trim())) return false;
+  if (/题型[一二三四五六七八九十]|方法技巧|知识点\d*[:：]/.test(head) && !/【(?:典例|变式|即学即练|诊断自测)/.test(head)) return false;
+  if (/典例|变式|即学即练|诊断自测|第\s*[一二三四五六七八九十百\d]+\s*题/.test(label)) return true;
+  if (/A．[\s\S]{0,120}B．|求|证明|已知|若|设|下列|填空|判断|计算|讨论|解答/.test(head)) return true;
+  return false;
 }
 
 function buildQuestionRecords(material: RagIndexedMaterial, text: string) {
@@ -726,10 +956,13 @@ function buildQuestionRecords(material: RagIndexedMaterial, text: string) {
           };
         })
       : [];
-  const candidates = blocks.filter((item) => item.block.length >= 30);
+  const candidates = blocks.filter((item) => item.block.length >= 40 && isLikelyQuestionBlock(item.label, item.block));
 
   return candidates.map((item, index): RagQuestionRecord => {
     const split = splitQuestionAnswer(item.block);
+    const formulaCount = countMatches(item.block, /\[公式\]/g);
+    const imageCount = countMatches(item.block, /\[图片\]/g);
+    const qualityWarnings = qualityWarningsForQuestion(split.prompt, formulaCount, imageCount);
     const tags = extractTags(material.title, material.path, item.block);
     const knowledgeTags = tags.filter((tag) => topicTags.includes(tag));
     const sourceKind = detectSourceKind(material.title, material.path, item.block);
@@ -745,6 +978,7 @@ function buildQuestionRecords(material: RagIndexedMaterial, text: string) {
       `题型：${questionType}`,
       `难度：${difficulty}`,
       `教学角色：${teachingRoles.join("、")}`,
+      qualityWarnings.length > 0 ? `质量提示：${qualityWarnings.join("；")}` : "",
       split.solution ? "已有答案或解析" : "未检测到答案解析，备课时需独立验算"
     ]
       .filter(Boolean)
@@ -771,7 +1005,10 @@ function buildQuestionRecords(material: RagIndexedMaterial, text: string) {
       knowledgeTags,
       tags,
       tokens: unique([...tokenize(tokenText), ...tokenize(material.title), ...tokenize(material.path)]),
-      hasAnswer: Boolean(split.solution)
+      hasAnswer: Boolean(split.solution),
+      formulaCount,
+      imageCount,
+      qualityWarnings
     };
   });
 }
@@ -780,6 +1017,8 @@ function buildSnippetRecords(material: RagIndexedMaterial, text: string) {
   const materialTags = extractTags(material.title, material.path, text.slice(0, 6000));
   return chunkText(text).map((chunk, index): RagSnippetRecord => {
     const tags = extractTags(material.title, material.path, chunk);
+    const formulaCount = countMatches(chunk, /\[公式\]/g);
+    const imageCount = countMatches(chunk, /\[图片\]/g);
     const kind: RagSnippetKind = /答案|解析|解答/.test(chunk) ? "answer" : /定义|性质|方法|模板|知识点|易错/.test(chunk) ? "knowledge" : "chunk";
     const context = [
       `资料：${material.title}`,
@@ -799,7 +1038,9 @@ function buildSnippetRecords(material: RagIndexedMaterial, text: string) {
       text: chunk,
       context,
       tags,
-      tokens: unique([...tokenize(context), ...tokenize(chunk), ...tokenize(material.title), ...tokenize(material.path)])
+      tokens: unique([...tokenize(context), ...tokenize(chunk), ...tokenize(material.title), ...tokenize(material.path)]),
+      formulaCount,
+      imageCount
     };
   });
 }
@@ -883,7 +1124,9 @@ export async function indexMaterialFile(store: Store, filePath: string, mimeType
         text: metadataText,
         context: `资料：${title}；片段类型：metadata；未解析正文`,
         tags: materialTags,
-        tokens: unique([...tokenize(title), ...tokenize(resolved), ...tokenize(materialTags.join(" "))])
+        tokens: unique([...tokenize(title), ...tokenize(resolved), ...tokenize(materialTags.join(" "))]),
+        formulaCount: 0,
+        imageCount: 0
       };
       material = {
         ...material,
@@ -897,7 +1140,8 @@ export async function indexMaterialFile(store: Store, filePath: string, mimeType
       return persistMaterial(material, [], [snippet]);
     }
 
-    const text = await extractText(resolved);
+    const extracted = await extractText(resolved);
+    const text = extracted.text;
     const materialTags = extractTags(title, resolved, text.slice(0, 6000));
     const baseMaterial = { ...material, tags: materialTags };
     const questions = buildQuestionRecords(baseMaterial, text);

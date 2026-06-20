@@ -173,6 +173,9 @@ export interface RagQuestionRecord {
   tags: string[];
   tokens: string[];
   hasAnswer: boolean;
+  formulaCount: number;
+  imageCount: number;
+  qualityWarnings: string[];
 }
 
 export type RagSourceKind = RagQuestionRecord["sourceKind"];
@@ -195,6 +198,8 @@ export interface RagSearchResult {
     context: string;
     tags: string[];
     tokens: string[];
+    formulaCount: number;
+    imageCount: number;
   };
   chunks: Array<{
     chunk: {
