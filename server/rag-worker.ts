@@ -12,6 +12,7 @@ try {
   const store = new Store();
   const material = await indexMaterialFile(store, filePath);
   process.stdout.write(JSON.stringify({ ok: true, material }) + "\n");
+  process.exit(0);
 } catch (error) {
   process.stderr.write(error instanceof Error ? error.stack || error.message : String(error));
   process.exit(1);

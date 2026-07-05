@@ -31,6 +31,10 @@ function optionalBoolean(value: string | undefined, fallback: boolean) {
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
 
+function optionalString(value: string | undefined, fallback = "") {
+  return value === undefined ? fallback : value;
+}
+
 const currentFile = fileURLToPath(import.meta.url);
 const serverDir = path.dirname(currentFile);
 const runningFromDist = serverDir.includes(`${path.sep}dist${path.sep}server`);
@@ -62,7 +66,24 @@ export const config = {
   ragMaxReindexFiles: Number(process.env.RAG_MAX_REINDEX_FILES || 300),
   ragReindexBatchSize: Number(process.env.RAG_REINDEX_BATCH_SIZE || 10),
   ragMaxParseBytes: Number(process.env.RAG_MAX_PARSE_BYTES || 20 * 1024 * 1024),
+  ragEmbeddingProvider: optionalString(process.env.RAG_EMBEDDING_PROVIDER, ""),
+  ragEmbeddingEndpoint: optionalString(process.env.RAG_EMBEDDING_ENDPOINT, "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal"),
+  ragEmbeddingApiKey: optionalString(process.env.RAG_EMBEDDING_API_KEY, ""),
+  ragEmbeddingModel: optionalString(process.env.RAG_EMBEDDING_MODEL, "doubao-embedding-vision-251215"),
+  ragEmbeddingBatchSize: Number(process.env.RAG_EMBEDDING_BATCH_SIZE || 8),
+  ragEmbeddingMaxRecords: Number(process.env.RAG_EMBEDDING_MAX_RECORDS || 5000),
+  ragVectorWeight: Number(process.env.RAG_VECTOR_WEIGHT || 70),
+  ragKeywordWeight: Number(process.env.RAG_KEYWORD_WEIGHT || 30),
+  ragBoostPatterns: optionalString(process.env.RAG_BOOST_PATTERNS, ""),
+  lessonDraftAiProvider: optionalString(process.env.LESSON_DRAFT_AI_PROVIDER, "ark"),
+  lessonDraftAiEndpoint: optionalString(process.env.LESSON_DRAFT_AI_ENDPOINT, "https://ark.cn-beijing.volces.com/api/v3/chat/completions"),
+  lessonDraftAiApiKey: optionalString(process.env.LESSON_DRAFT_AI_API_KEY, process.env.RAG_EMBEDDING_API_KEY || ""),
+  lessonDraftAiModel: optionalString(process.env.LESSON_DRAFT_AI_MODEL, "glm-5-2-260617"),
+  ragWorkerMaxOldSpaceMb: Number(process.env.RAG_WORKER_MAX_OLD_SPACE_MB || 512),
+  ragWorkerTimeoutMs: Number(process.env.RAG_WORKER_TIMEOUT_MS || 5 * 60 * 1000),
+  docConversionTimeoutMs: Number(process.env.DOC_CONVERSION_TIMEOUT_MS || 2 * 60 * 1000),
   maxUploadFiles: Number(process.env.MAX_UPLOAD_FILES || 5000),
+  maxUploadFileBytes: Number(process.env.MAX_UPLOAD_FILE_MB || 500) * 1024 * 1024,
   trustProxy: optionalBoolean(process.env.TRUST_PROXY, false),
   secureCookies: optionalBoolean(process.env.SECURE_COOKIES, process.env.NODE_ENV === "production"),
   enableHsts: optionalBoolean(process.env.ENABLE_HSTS, false),

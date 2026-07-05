@@ -1,0 +1,122 @@
+\documentclass[12pt,a4paper]{ctexart}
+
+\usepackage[margin=1.5cm,top=1.3cm,bottom=1.45cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{tikz}
+\usepackage{xcolor}
+\usepackage{enumitem}
+
+\definecolor{Ink}{RGB}{30,37,47}
+\definecolor{Coral}{RGB}{197,79,73}
+\definecolor{Teal}{RGB}{37,126,122}
+\definecolor{Gold}{RGB}{201,150,45}
+\definecolor{Paper}{RGB}{252,252,249}
+\definecolor{SoftTeal}{RGB}{231,244,242}
+\definecolor{SoftGold}{RGB}{250,244,229}
+\definecolor{Line}{RGB}{214,221,224}
+
+\pagecolor{Paper}
+\pagestyle{empty}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.45em}
+\setlist[enumerate]{leftmargin=1.8em,itemsep=0.45em,topsep=0.2em}
+
+\newcommand{\lessonTitle}[2]{
+  \begin{tikzpicture}
+    \node[
+      fill=SoftTeal,
+      inner xsep=12pt,
+      inner ysep=9pt,
+      text width=\dimexpr\linewidth-24pt\relax,
+      align=left
+    ] {
+      {\LARGE\bfseries\color{Ink} #1}\hfill
+      {\normalsize\color{Teal} #2}
+    };
+    \draw[Gold,line width=1.2pt] (0,-0.56) -- (4.0,-0.56);
+  \end{tikzpicture}
+  \vspace{0.9em}
+}
+
+\newcommand{\questionBox}[2]{
+  \begin{tikzpicture}
+    \node[
+      draw=Line,
+      fill=white,
+      line width=0.7pt,
+      inner sep=10pt,
+      text width=\dimexpr\linewidth-22pt\relax,
+      align=left
+    ] {
+      {\large\bfseries\color{Coral} #1}\par\vspace{0.45em}
+      #2
+    };
+  \end{tikzpicture}
+}
+
+\newcommand{\writeArea}[1]{
+  \vspace{0.7em}
+  \begin{tikzpicture}
+    \fill[white] (0,0) rectangle (\linewidth,#1);
+    \draw[Line,line width=0.7pt] (0,0) rectangle (\linewidth,#1);
+    \foreach \y in {0.9,1.8,...,#1} {
+      \draw[Line,line width=0.32pt] (0.38,\y) -- (\linewidth-0.38cm,\y);
+    }
+    \fill[SoftGold] (0.35,#1-0.7) rectangle (3.0,#1-0.25);
+    \node[Gold] at (1.68,#1-0.48) {\small 课堂书写区};
+  \end{tikzpicture}
+}
+
+\begin{document}
+
+\lessonTitle{轻量彩色讲义风}{A4 竖版 · 题目与留白}
+
+\questionBox{第1题：概念与基础计算}{
+已知函数 $f(x)=x^2-2ax+1$。
+\begin{enumerate}
+  \item 写出函数图象的对称轴。
+  \item 当 $x\in[0,3]$ 时，讨论 $f(x)$ 的最小值与参数 $a$ 的关系。
+\end{enumerate}
+}
+
+\writeArea{15.0}
+
+\newpage
+\lessonTitle{轻量彩色讲义风}{A4 竖版 · 大题一页}
+
+\questionBox{第2题：函数零点与参数}{
+设函数 $g(x)=\ln x-kx+1$，其中 $k$ 为实数。
+\begin{enumerate}
+  \item 当 $k=1$ 时，判断 $g(x)$ 在 $(0,+\infty)$ 上的零点个数。
+  \item 若函数 $g(x)$ 在 $(0,+\infty)$ 上恰有两个零点，求 $k$ 的取值范围。
+\end{enumerate}
+}
+
+\vspace{0.5em}
+\begin{center}
+\begin{tikzpicture}[scale=0.95]
+  \draw[->,line width=0.7pt,Ink] (-0.2,0) -- (7.2,0) node[right] {$x$};
+  \draw[->,line width=0.7pt,Ink] (0,-2.0) -- (0,3.2) node[above] {$y$};
+  \draw[Teal,line width=1.1pt,domain=0.25:6.6,samples=120] plot (\x,{ln(\x)+1-0.55*\x});
+  \draw[Line,line width=0.7pt] (1,0.08) -- (1,-0.08) node[below=4pt] {$1$};
+  \node[Teal] at (4.95,1.2) {$y=\ln x-kx+1$};
+\end{tikzpicture}
+\end{center}
+
+\writeArea{10.4}
+
+\newpage
+\lessonTitle{轻量彩色讲义风}{A4 竖版 · 小题智能混排}
+
+\questionBox{第3题：同类小题组}{
+\begin{enumerate}
+  \item 已知 $\vec a=(2,-1)$，$\vec b=(m,3)$，若 $\vec a\perp \vec b$，求 $m$。
+  \item 已知复数 $z=1+2i$，求 $z\overline z$。
+  \item 正方体 $ABCD-A_1B_1C_1D_1$ 中，判断直线 $AC$ 与平面 $BDD_1B_1$ 的位置关系。
+\end{enumerate}
+}
+
+\writeArea{14.9}
+
+\end{document}

@@ -656,6 +656,9 @@ textarea:focus {
 .detail-panel,
 .file-panel,
 .preview-panel,
+.ai-draft-panel,
+.ai-draft-input,
+.ai-draft-review,
 .materials-table,
 .rag-results,
 .search-band,
@@ -748,6 +751,40 @@ textarea:focus {
   margin-bottom: 16px;
   display: grid;
   gap: 12px;
+}
+
+.ai-draft-panel {
+  padding: 14px;
+  margin-bottom: 16px;
+  display: grid;
+  grid-template-columns: minmax(280px, 0.85fr) minmax(0, 1.15fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.ai-draft-input,
+.ai-draft-review {
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.ai-draft-input textarea {
+  min-height: 260px;
+}
+
+.ai-draft-review .form-grid {
+  grid-template-columns: repeat(2, minmax(150px, 1fr));
+}
+
+.prompt-editor {
+  min-height: 360px;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+  overflow: auto;
 }
 
 .profile-heading,
@@ -1295,7 +1332,8 @@ textarea:focus {
 
   .content-grid,
   .detail-grid,
-  .profile-grid {
+  .profile-grid,
+  .ai-draft-panel {
     grid-template-columns: 1fr;
   }
 
@@ -1337,6 +1375,7 @@ textarea:focus {
   }
 
   .form-grid,
+  .ai-draft-review .form-grid,
   .stat-row {
     grid-template-columns: 1fr;
   }
@@ -1346,7 +1385,7 @@ textarea:focus {
   }
 
   .workspace-header h2,
-.detail-header h3 {
+  .detail-header h3 {
     font-size: 24px;
   }
 }

@@ -24,7 +24,7 @@ Formal lessons can still borrow the trial-lesson strengths: diagnostic opener, v
 4. Search localized or high-quality exam questions and verify the solutions.
 5. Arrange the questions into a student-specific learning ladder: diagnostic -> model example -> guided practice -> independent variant -> homework.
 6. Write the teacher script and detailed teacher-facing knowledge file as Markdown files.
-7. Build a clean LaTeX Beamer classroom PDF with writable tablet space.
+7. Build a clean A4 portrait LaTeX classroom handout PDF with writable tablet space.
 8. Check the files for no fenced code blocks and correct math delimiters.
 9. Fixed final step: stop after the four local deliverables pass quality checks. The host service will sync them to Feishu with the current logged-in `lark-cli --as user` identity, create the calendar event when possible, and send the sync result message.
 

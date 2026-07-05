@@ -19,7 +19,7 @@ For substantial lesson-prep tasks, the main agent must split work across sub-age
 
 1. `题目提取`: extract and index questions from local files, screenshots, library materials, and web exam sources; record internal question IDs, topics, teaching roles, missing figures, and unclear text.
 2. `答案核对`: independently solve and verify selected questions; check every formula condition, calculation, diagram relation, and answer form.
-3. `课件生成`: create the Beamer classroom PDF from the verified sequence; keep pages student-facing, spacious, and aligned with the teacher script.
+3. `课件生成`: create the A4 portrait classroom handout PDF from the verified sequence; keep pages student-facing, spacious, and aligned with the teacher script.
 4. `逐字稿和内容丰富`: expand the teacher script and content density after verification; add sufficient diagnostic, model, variant, consolidation, and homework material; write page-by-page teaching language, prompts, likely student responses, correction wording, and board notes.
 
 The main agent must integrate the sub-agent outputs, resolve conflicts, and run final QA. Do not use unchecked extracted questions, unverified answers, thin question sets, or outline-only teacher scripts in final deliverables.
@@ -31,8 +31,6 @@ Create these intermediate files under `_work/` for substantial lesson-prep jobs.
 1. `_work/题目索引.md`: extracted local, library, screenshot, and web questions with internal IDs, topics, teaching roles, and missing information.
 2. `_work/候选题池.md`: shortlisted and rejected candidates, fit rationale, and whether a question is verified authentic exam, official exam, simulation/mock, local, adapted, or self-written.
 3. `_work/答案核对表.md`: independent solutions, final answers, condition checks, diagram checks, and unresolved doubts.
-4. `_work/课件页码映射.md`: classroom PDF page numbers mapped to visible `第X题` labels and teacher-script sections.
-5. `_work/内容丰富清单.md`: checks for sufficient diagnostic, model, guided practice, variants, consolidation, homework, prompts, and common-error coverage.
 
 Run preparation in two internal stages:
 
@@ -43,9 +41,9 @@ Do not start Stage 2 until the selected question sequence has passed answer veri
 
 ### Local question PDF priority
 
-If the user provides a local PDF, screenshot set, DOCX, or other document containing lesson questions, those questions are the primary class material. Extract or visually inspect the file first and use those questions as the default classroom sequence. Keep local page/question-number mappings internally in `_work/题目索引.md` or `_work/课件页码映射.md` when useful. Library material and web exam questions may add scaffolding, variants, or homework, but they should not replace the provided local questions unless there is a teaching reason.
+If the user provides a local PDF, screenshot set, DOCX, or other document containing lesson questions, those questions are the primary class material. Extract or visually inspect the file first and use those questions as the default classroom sequence. Keep local page/question-number mappings internally in `_work/题目索引.md` when useful. Library material and web exam questions may add scaffolding, variants, or homework, but they should not replace the provided local questions unless there is a teaching reason.
 
-Every in-class problem in `课堂课件.pdf` must show a simple question label, for example `第5题`, not `本地PDF第5题`. Every matching section in `老师逐字稿.md` must align to the classroom PDF page number and visible `第X题` label. The final user-facing files do not need to emphasize local PDF sources, page numbers, or original local question-number mappings.
+Every in-class problem in `课堂课件.pdf` must show a simple question label, for example `第5题`, not `本地PDF第5题`. The final user-facing files do not need to emphasize local PDF sources, page numbers, or original local question-number mappings.
 
 ## 2. Local Library And Web Research
 
@@ -73,7 +71,7 @@ Search the student folder or user-specified folder for local PDFs, images, DOCX 
 
 - Extract text and embedded images/tables; visually inspect pages when extraction is incomplete.
 - Build an internal question index with lesson sequence ID, topic, type, and any missing figures or tables. Keep local page/question numbers internally only when useful for verification.
-- In the classroom PDF, display the simple label `第X题`. In the teacher script, align to classroom page numbers and visible question labels; do not force local PDF source details into final user-facing files.
+- In the classroom PDF, display the simple label `第X题`. Do not force local PDF source details into final user-facing files.
 - Use outside sources only to explain, scaffold, extend, or verify; keep local PDF questions as the visible lesson spine.
 
 ### Web research
@@ -120,9 +118,16 @@ For each layer, write:
 
 `知识点详解.md` is a teacher-facing preparation file, not a condensed student handout. Include:
 
+- Detail level is independent of the student's score. Always write `知识点详解.md` and `老师逐字稿.md` at maximum teacher-preparation density so the teacher can teach without getting stuck. Treat "60分学生能听懂" only as the minimum clarity threshold for wording and prerequisite铺垫, not as permission to simplify, omit, or shorten the teacher material.
+- Distinguish `一般结论` and `二级结论`.
+  - `一般结论` means textbook-level definitions, standard equations, naming conventions, basic formulas, and directly taught properties. These may be stated directly, but must still include conditions, symbol meanings, and common misuse boundaries.
+  - `二级结论` means any commonly used but derived shortcut, exam routine, transformed formula, method template, or "大招", including but not limited to 焦半径、通径、焦点弦、弦长公式、中点弦/点差法结论、角相等转斜率、定点/定值整理、参数法少算一个根、韦达条件转换、面积/距离快速表达. These must not be only listed. For every二级结论, write `结论`, `适用条件`, `从哪里来`, `逐步推导`, `每一步为什么成立`, `什么时候不能用`, and `课堂讲法`.
+- For二级结论推导, prefer in-scope prerequisites when they are enough. Out-of-scope or later-grade methods may be used when they genuinely improve the lesson, but they must be clearly marked as `[超纲]`, explain why they are worth using here, and provide either an in-scope alternative explanation or a note that this part is only for awareness.
+- 二级结论的推导必须拆到最小可教学步骤。不要把多个代数动作合并在一句话里。展开、移项、因式分解、除以非零量、开方、代入定义、检查参数范围，都算不同小步，每一小步都要写出理由。
+- Knowledge coverage must be broad enough for a teacher to answer predictable student questions. Do not only include knowledge used by the selected questions; include the surrounding foundation that the teacher may need to explain the topic smoothly.
 - Write at an extremely detailed, no-step-skipping standard. Assume the teacher may not have learned this topic before and must still be able to teach the lesson by following the file line by line.
 - Explain every prerequisite, transition, algebraic transformation, theorem condition, diagram reading step, and conclusion. Do not jump from "therefore" to an answer unless the intermediate reason is written.
-- Keep the content strictly within the student's current grade, textbook progress, and stated lesson scope. Do not use out-of-scope or later-grade knowledge unless the user explicitly approves it, and label any necessary extension as `[超纲风险-需确认]`.
+- Prioritize the student's current grade, textbook progress, and stated lesson scope, but do not ban out-of-scope or later-grade knowledge. Any such content must be clearly marked as `[超纲]`, with a short explanation of why it is being used and how to teach or skip it safely.
 - When a method depends on earlier knowledge, write the earlier knowledge first, then show exactly how it is used in the current problem.
 - Prerequisites and links to earlier knowledge.
 - Definitions, notation, formulas, properties, theorem conditions, and scope limits.
@@ -165,44 +170,48 @@ Verify every calculation, proof, condition, and diagram independently. Do not in
 
 Use a strict no-jump explanation standard in `老师逐字稿.md`:
 
+- Detail level is not adjusted downward for high-scoring students. Before using any formula, theorem, substitution, parameter, slope relation, vector relation, or Vieta relation, state why it is allowed here and what object it applies to. Do not assume the student can fill in algebra, geometry, or notation gaps.
+- The `完整解答` for each question must be more detailed than ordinary board notes. It is a teacher's anti-stuck teaching script, not a compressed answer key. Expand every algebraic transformation, including substitution, expansion, collecting terms, factoring, applying Vieta, converting vector/angle/length conditions, solving parameters, checking domains, and writing the final answer form.
+- Every major step must include a `为什么这一步这样做` explanation. For example, if choosing to eliminate $x$ instead of $y$, explain which condition becomes simpler; if using a known root, explain why that parameter value corresponds to the known point; if using $k_1+k_2=0$, explain the symmetry or angle condition that makes it valid.
+- Use a one-small-step-at-a-time standard, stricter than ordinary board notes. A "small step" means a single operation or inference only. Do not merge `代入并整理`, `通分化简`, `由韦达可得`, `两式相除得`, or `联立解得` into one jump. Write the actual intermediate line(s) and the reason for the operation.
+- Avoid all hidden mental arithmetic in final teaching files. Simple arithmetic may be brief, but it still must show the equality chain, especially sign changes, common denominators, factorization, square roots, and parameter restrictions.
+- When a solution uses a二级结论, either reproduce the necessary derivation in the question section or explicitly point to the corresponding derivation section in `知识点详解.md`, then show how the current question satisfies its conditions.
 - The teacher script must be detailed enough that a teacher who has not previously studied the topic can still deliver it accurately.
 - For each question, break the solution into observable micro-steps: what to look at first, what information to mark, which prior fact is being used, why the next operation is allowed, what to write on the board, and what the student should say or do.
-- Do not use unintroduced formulas, theorems, tactics, or later-grade methods. If an efficient shortcut is beyond the student's current scope, replace it with an in-scope method or explicitly mark it as not for this lesson.
+- Do not use unintroduced formulas, theorems, tactics, or later-grade methods without warning. If an efficient shortcut is beyond the student's current scope, explicitly mark it as `[超纲]`, explain why it appears, and provide an in-scope method or say that this part is only for awareness.
 - Every transition in spoken wording and every transformation in the solution must have a reason. Avoid vague jumps such as "显然", "容易得到", "直接可得", or "套公式" unless the missing reasoning is immediately written out.
 - If the student has not learned a prerequisite, insert a short teachable prerequisite block before using it, with teacher wording and a one-step check question.
 
-For questions that appear in the classroom PDF, place the full teacher script and detailed solution at the corresponding PDF page/question section, not only in an end-of-file solution bank. Add an alignment map near the start of `老师逐字稿.md` in the form `课堂PDF页码 -> 第X题 -> 教学环节`.
+For questions that appear in the classroom PDF, place the full teacher script and detailed solution near the corresponding question section, not only in an end-of-file solution bank.
 
 ## 6. Classroom PDF Standard
 
-Generate `课堂课件.pdf` from LaTeX Beamer for tablet annotation.
+Generate `课堂课件.pdf` as an A4 portrait classroom handout PDF for tablet annotation. Keep the filename `课堂课件.pdf` for system compatibility, but the content should be a clean math handout, not a PPT-style slide deck.
 
-Start from `assets/tablet-beamer-template.tex`. Copy it into the lesson working directory, replace the sample frames, and keep the `\writingspace` macro for annotation pages.
+Start from `assets/tablet-beamer-template.tex`. Copy it into the lesson working directory, replace the sample pages, and keep the `\writingspace` macro for annotation pages.
 
 ### Student-facing answer boundary
 
-Keep `课堂课件.pdf` for prompts, diagrams, method cues, light hints, and writable annotation space only. Do not include final answers, complete solution steps, answer-key pages, or teacher-only source notes in the classroom PDF unless the user explicitly requests answer reveals. Store answers, checks, and full explanations in `老师逐字稿.md` and `知识点详解.md`.
+Keep `课堂课件.pdf` for the visible knowledge-point display, problem statements, required diagrams, tables, coordinate systems, writable annotation space, and a final qualified template summary only. Do not include final answers, complete solution steps, answer-key pages, hint pages, reveal pages, or teacher-only source notes unless the user explicitly requests an answer version. Store all answers, checks, hints, and full explanations in `老师逐字稿.md` and `知识点详解.md`.
 
 ### Layout
 
-- Use a clean 16:9 Beamer layout and Chinese-capable XeLaTeX compilation.
-- Prefer large readable text, restrained color, and plain mathematical structure.
-- Leave substantial writable space on problem, discussion, and guided-practice pages.
-- Aim for roughly 40-60% writable blank area on pages where the student or teacher should write.
-- Keep one main teaching action per page.
-- Label each problem page with the question number. If it comes from a local question PDF, still write only `第X题` in the frame title or near the prompt.
-- Put detailed derivations in the Markdown files, not on the initial problem page.
-
-### Reveal rhythm
-
-Use separate PDF pages for stable annotation:
-
-1. Knowledge prompt or question page with writable space.
-2. Optional light-hint page.
-3. Method or key-step reveal page.
-4. Concise method recap page when needed, without displaying the final answer.
-
-Do not reveal the answer on the same page as the first attempt. Duplicate a frame when necessary rather than relying on fragile interactive behavior.
+- Use an A4 portrait `ctexart` handout layout and Chinese-capable XeLaTeX compilation.
+- Use a normal class handout title such as `[课程主题]课堂讲义`. Do not add a student/date subtitle line. Do not put style labels such as `学校试卷风`, `A4竖版`, or `题目与留白` on the actual classroom PDF.
+- Use a plain school-paper style: black text, simple horizontal rules, and no decorative cards.
+- Do not draw bordered writing boxes or horizontal ruled writing lines. Leave clean blank vertical space after questions for tablet handwriting.
+- Start the PDF with one or more knowledge-point display pages before the questions. These pages must be content-rich and should not leave handwriting blanks. They should be textbook/workbook-style complete basic knowledge systems, not a brief preview and not local hints for the later exercises. Write the complete general foundation of the topic before the problem pages.
+- Knowledge pages must contain only abstract, reusable knowledge: definitions, objects, symbols, conditions, formulas, properties, graph/diagram/table representations, judgment rules, common question-type signals, and error boundaries. Do not reference later question numbers, specific problem functions, specific numbers, local PDF question wording, any solution process, or teacher-only wording.
+- Do not underwrite the knowledge pages. For each core object in the topic, cover at least: what it is, when it is allowed to use, how it is represented or drawn, what conclusions it gives, how to judge it in a question, and where it commonly fails. Add more knowledge pages rather than compressing away necessary basics.
+- For function topics, cover function definition, domain, range, correspondence rule, equality of functions, analytic/graph/table/verbal representations, the meaning of graph points, monotonicity, parity or symmetry when relevant, extrema, zeros, endpoints, and parameter effects as applicable.
+- For quadratic functions, cover standard/general form, vertex form, intercept form when relevant, opening direction, axis of symmetry, vertex, discriminant, roots, intersections with the x-axis, monotonic intervals, interval extrema, and graph sketches.
+- For extrema and maximum/minimum topics, clearly distinguish global maximum/minimum from local extrema. State that interval extrema usually come from endpoint values, interior extrema, non-differentiable points, or boundary/critical cases. Include necessary conditions and sufficient conditions for extrema, plus boundary cases.
+- For zero topics, include a graph-based explanation of intersections with the x-axis, and distinguish crossing, tangency, no intersection, and parameter-driven critical states.
+- Use intelligent density: one major problem per page; small same-type questions may be grouped on one page when they still leave enough writing space.
+- Leave substantial writable space after each problem or problem group. Aim for roughly 55-75% writable blank area on pages where the student or teacher should write.
+- Label each problem page with the simple student-facing question number, such as `第X题`. If it comes from a local question PDF, still write only `第X题` near the prompt.
+- End the PDF with a `常用套路模板总结` page only when the lesson's selected questions genuinely support reusable routines. The summary must not be a forced slogan: each item should state the applicable question type or recognition signal, conditions for use, operation sequence, and situations where the routine may fail. If no reliable reusable template exists, write a concise `本节课不硬总结模板，重点保留题目中的判断条件` style closing instead.
+- Put detailed derivations, hints, answer checks, and teacher wording in the Markdown files, not in the classroom PDF.
 
 ### Accurate visuals
 
@@ -213,6 +222,8 @@ Use deterministic rendering first:
 - Statistical charts and tables: LaTeX or programmatic drawing.
 - Existing source figures: preserve or crop when legible and permitted.
 
+If a problem is naturally diagram-based or graph-based, the classroom PDF must include the diagram. Do not omit drawable figures to save time. For geometry, function images, coordinate systems, vectors, complex-plane diagrams, probability/statistical charts, or tables, draw or typeset them in LaTeX next to the problem statement whenever the visual is relevant to solving the problem.
+
 Use image generation only for a genuinely necessary complex situational image, spatial illustration, or hard-to-redraw problem visual. When it is needed, follow the installed `imagegen` skill and use the built-in image generation tool by default. Do not generate decorative images. Do not ask an image model to draw exact geometry, axes, measurements, formulas, or answer text. Validate every generated image before embedding it and mark it as a generated illustration in the teacher script.
 
 ### Build and QA
@@ -220,9 +231,6 @@ Use image generation only for a genuinely necessary complex situational image, s
 - Compile with XeLaTeX, usually twice.
 - Confirm the PDF exists, is non-empty, and opens.
 - Check page count with PDF tooling.
-- Render representative pages to images and inspect them.
-- Verify font readability, blank writing areas, reveal order, clipping, and diagram accuracy.
-- Confirm the `第X题` labels in `课堂课件.pdf` match the page/question alignment map in `老师逐字稿.md`.
 
 ## 6A. Final QA Priorities
 
@@ -232,7 +240,7 @@ Before finalization, prioritize these checks:
 - A standard 90-minute formal lesson has enough complete question groups or micro-question groups: diagnostic, model, guided practice, independent variant, consolidation, and homework.
 - Every selected question has independently checked final answers and key reasoning; unresolved or possibly wrong answers are flagged before delivery.
 - Any question called `真题`, `官方考试题`, or `模拟题` has reliable source information. Local, adapted, or self-written questions are not mislabeled as authentic exam questions.
-- Local PDF or screenshot questions can be the lesson spine, but final user-facing files only need classroom page and visible `第X题` alignment, not local source/page/question-number mapping.
+- Local PDF or screenshot questions can be the lesson spine, but final user-facing files do not need to emphasize local source/page/question-number mapping.
 
 ## 7. Post-Class Feedback Standard
 

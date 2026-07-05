@@ -31,6 +31,7 @@ import {
   Send,
   Settings,
   SlidersHorizontal,
+  Sparkles,
   Stethoscope,
   Trash2,
   Upload,
@@ -41,6 +42,11 @@ import { api } from "./api";
 import type { Course, CourseFile, Diagnostics, DiagnosticStatus, Job, Material, RagQuestionRecord, RagReindexJob, RagSearchResult, RagSourceKind, Student, SystemInfo, User } from "./types";
 
 type View = "students" | "materials";
+
+interface AiLessonDraft {
+  student: Student;
+  course: Course;
+}
 
 interface SessionState {
   system: SystemInfo | null;
@@ -64,6 +70,20 @@ const emptyCourseForm = {
   autoRun: true
 };
 
+const emptyAiInput = [
+  "学生：",
+  "年级：",
+  "分数/水平：",
+  "课程类型：正式课",
+  "课长：90分钟",
+  "家长/老师沟通：",
+  "学生原题/错题：",
+  "老师判断：",
+  "本次备课要求：",
+  "资料路径：",
+  "其他："
+].join("\n");
+
 const folderPickerProps = { webkitdirectory: "", directory: "" };
 
 function useInterval(callback: () => void, delay: number | null) {
@@ -76,14 +96,27 @@ function useInterval(callback: () => void, delay: number | null) {
 
 function formatDate(value?: string) {
   if (!value) return "未设置";
+  const compact = value.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  if (compact) return `${compact[1]}-${compact[2]}-${compact[3]} ${compact[4]}:${compact[5]}`;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString("zh-CN", {
+    year: "numeric",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit"
   });
+}
+
+function toDatetimeLocalValue(value?: string) {
+  if (!value) return "";
+  const compact = value.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
+  if (compact) return `${compact[1]}T${compact[2]}`;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const offsetMs = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
 }
 
 function statusLabel(status: Course["status"] | Job["status"]) {
@@ -895,6 +928,7 @@ function StudentWorkspace({
   onError: (message: string) => void;
 }) {
   const [showForm, setShowForm] = useState(false);
+  const [showAiDraft, setShowAiDraft] = useState(false);
 
   if (!student) {
     return (
@@ -918,12 +952,27 @@ function StudentWorkspace({
             <RefreshCcw size={16} />
             刷新
           </button>
+          <button className="ghost-button" onClick={() => setShowAiDraft((value) => !value)}>
+            <Sparkles size={17} />
+            AI 草稿
+          </button>
           <button className="primary-button" onClick={() => setShowForm((value) => !value)}>
             <Plus size={17} />
             新建课程
           </button>
         </div>
       </header>
+
+      {showAiDraft ? (
+        <AiLessonDraftPanel
+          initialStudent={student}
+          onCreated={async (course) => {
+            setShowAiDraft(false);
+            onCreated(course);
+          }}
+          onError={onError}
+        />
+      ) : null}
 
       {showForm ? (
         <CourseForm
@@ -971,7 +1020,7 @@ function StudentWorkspace({
           )}
         </section>
 
-        <CourseDetail course={selectedCourse} onRefresh={onRefresh} onDeleteCourse={onDeleteCourse} onError={onError} />
+        <CourseDetail student={student} course={selectedCourse} onRefresh={onRefresh} onDeleteCourse={onDeleteCourse} onError={onError} />
       </div>
     </div>
   );
@@ -1071,6 +1120,264 @@ function StudentProfilePanel({
         </label>
       </div>
     </form>
+  );
+}
+
+function StructuredLessonFields({
+  studentForm,
+  courseForm,
+  updateStudent,
+  updateCourse
+}: {
+  studentForm: {
+    name: string;
+    stage: string;
+    notes: string;
+    weakPoints: string;
+    commonMistakes: string;
+    parentNotes: string;
+    nextLessonSuggestion: string;
+  };
+  courseForm: {
+    type: string;
+    stage: string;
+    grade: string;
+    score: string;
+    province: string;
+    textbook: string;
+    lessonKind: string;
+    desiredContent: string;
+    lessonTime: string;
+    durationMinutes: number;
+    localFiles: string;
+  };
+  updateStudent: (name: string, value: string) => void;
+  updateCourse: (name: string, value: string | number) => void;
+}) {
+  return (
+    <>
+      <div className="form-grid">
+        <label>
+          学生姓名
+          <input value={studentForm.name} onChange={(event) => updateStudent("name", event.target.value)} />
+        </label>
+        <label>
+          学段
+          <select value={studentForm.stage} onChange={(event) => {
+            updateStudent("stage", event.target.value);
+            updateCourse("stage", event.target.value);
+          }}>
+            <option>高中数学</option>
+            <option>初中数学</option>
+            <option>高等数学</option>
+            <option>其他</option>
+          </select>
+        </label>
+        <label>
+          年级
+          <input value={courseForm.grade} onChange={(event) => updateCourse("grade", event.target.value)} />
+        </label>
+        <label>
+          分数
+          <input value={courseForm.score} onChange={(event) => updateCourse("score", event.target.value)} />
+        </label>
+        <label>
+          课程类型
+          <select value={courseForm.type} onChange={(event) => updateCourse("type", event.target.value)}>
+            <option value="formal">正式课</option>
+            <option value="trial">试听课</option>
+          </select>
+        </label>
+        <label>
+          课长
+          <input type="number" min={20} max={240} step={5} value={courseForm.durationMinutes} onChange={(event) => updateCourse("durationMinutes", Number(event.target.value))} />
+        </label>
+        <label>
+          上课时间
+          <input type="datetime-local" value={courseForm.lessonTime} onChange={(event) => updateCourse("lessonTime", event.target.value)} />
+        </label>
+        <label>
+          地区
+          <input value={courseForm.province} onChange={(event) => updateCourse("province", event.target.value)} />
+        </label>
+        <label>
+          教材
+          <input value={courseForm.textbook} onChange={(event) => updateCourse("textbook", event.target.value)} />
+        </label>
+        <label>
+          课程性质
+          <select value={courseForm.lessonKind} onChange={(event) => updateCourse("lessonKind", event.target.value)}>
+            <option>专题提升</option>
+            <option>同步巩固</option>
+            <option>错题复盘</option>
+            <option>培优拓展</option>
+            <option>考前冲刺</option>
+            <option>作业答疑</option>
+          </select>
+        </label>
+      </div>
+      <label>
+        想听的内容
+        <textarea value={courseForm.desiredContent} onChange={(event) => updateCourse("desiredContent", event.target.value)} rows={2} required />
+      </label>
+      <label>
+        本地题目/资料路径
+        <textarea value={courseForm.localFiles} onChange={(event) => updateCourse("localFiles", event.target.value)} rows={2} />
+      </label>
+      <label>
+        学生长期备注
+        <textarea value={studentForm.notes} onChange={(event) => updateStudent("notes", event.target.value)} rows={2} />
+      </label>
+      <label>
+        学生薄弱点
+        <textarea value={studentForm.weakPoints} onChange={(event) => updateStudent("weakPoints", event.target.value)} rows={2} />
+      </label>
+      <label>
+        常错题型/方法
+        <textarea value={studentForm.commonMistakes} onChange={(event) => updateStudent("commonMistakes", event.target.value)} rows={2} />
+      </label>
+      <label>
+        家长沟通记录
+        <textarea value={studentForm.parentNotes} onChange={(event) => updateStudent("parentNotes", event.target.value)} rows={2} />
+      </label>
+      <label>
+        下次课建议
+        <textarea value={studentForm.nextLessonSuggestion} onChange={(event) => updateStudent("nextLessonSuggestion", event.target.value)} rows={2} />
+      </label>
+    </>
+  );
+}
+
+function AiLessonDraftPanel({
+  initialStudent,
+  onCreated,
+  onError
+}: {
+  initialStudent: Student;
+  onCreated: (course: Course) => void;
+  onError: (message: string) => void;
+}) {
+  const [input, setInput] = useState(() =>
+    emptyAiInput.replace("学生：", `学生：${initialStudent.name}`).replace("年级：", `年级：${initialStudent.stage || ""}`)
+  );
+  const [draft, setDraft] = useState<AiLessonDraft | null>(null);
+  const [studentForm, setStudentForm] = useState({
+    name: initialStudent.name,
+    stage: initialStudent.stage || "高中数学",
+    notes: initialStudent.notes || "",
+    weakPoints: initialStudent.weakPoints || "",
+    commonMistakes: initialStudent.commonMistakes || "",
+    parentNotes: initialStudent.parentNotes || "",
+    nextLessonSuggestion: initialStudent.nextLessonSuggestion || ""
+  });
+  const [courseForm, setCourseForm] = useState({ ...emptyCourseForm, autoRun: false, stage: initialStudent.stage || emptyCourseForm.stage });
+  const [generating, setGenerating] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  function updateStudent(name: string, value: string) {
+    setStudentForm((current) => ({ ...current, [name]: value }));
+  }
+
+  function updateCourse(name: string, value: string | number) {
+    setCourseForm((current) => ({ ...current, [name]: value }));
+  }
+
+  async function generateDraft(event: React.FormEvent) {
+    event.preventDefault();
+    setGenerating(true);
+    try {
+      const data = await api.post<{ draft: AiLessonDraft }>("/api/ai-drafts/lesson", { input });
+      setDraft(data.draft);
+      setStudentForm({
+        name: data.draft.student.name || initialStudent.name,
+        stage: data.draft.student.stage || initialStudent.stage || "高中数学",
+        notes: data.draft.student.notes || initialStudent.notes || "",
+        weakPoints: data.draft.student.weakPoints || initialStudent.weakPoints || "",
+        commonMistakes: data.draft.student.commonMistakes || initialStudent.commonMistakes || "",
+        parentNotes: data.draft.student.parentNotes || initialStudent.parentNotes || "",
+        nextLessonSuggestion: data.draft.student.nextLessonSuggestion || initialStudent.nextLessonSuggestion || ""
+      });
+      setCourseForm({
+        type: data.draft.course.type,
+        stage: data.draft.course.stage || initialStudent.stage || "高中数学",
+        grade: data.draft.course.grade || "",
+        score: data.draft.course.score || "",
+        province: data.draft.course.province || "",
+        textbook: data.draft.course.textbook || "",
+        lessonKind: data.draft.course.lessonKind || "专题提升",
+        desiredContent: data.draft.course.desiredContent || "",
+        lessonTime: toDatetimeLocalValue(data.draft.course.lessonTime),
+        durationMinutes: data.draft.course.durationMinutes || 90,
+        localFiles: data.draft.course.localFiles || "",
+        notes: data.draft.course.notes || input,
+        autoRun: false
+      });
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function saveDraft() {
+    setSaving(true);
+    try {
+      const data = await api.post<{ student: Student; course: Course; job: Job }>("/api/ai-drafts/lesson/commit", {
+        studentId: initialStudent.id,
+        student: studentForm,
+        course: courseForm
+      });
+      onCreated(data.course);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="ai-draft-panel">
+      <form className="ai-draft-input" onSubmit={generateDraft}>
+        <div className="form-heading">
+          <span>
+            <Sparkles size={17} />
+            <strong>AI 备课草稿</strong>
+          </span>
+          <small>只整理学生和课程字段，调用 Codex 时再检索资料</small>
+        </div>
+        <label>
+          非结构化备课内容
+          <textarea value={input} onChange={(event) => setInput(event.target.value)} rows={10} />
+        </label>
+        <button className="primary-button" disabled={generating || !input.trim()}>
+          {generating ? <Loader2 className="spin" size={17} /> : <Sparkles size={17} />}
+          生成结构化草稿
+        </button>
+      </form>
+
+      <div className="ai-draft-review">
+        <div className="form-heading">
+          <span>
+            <FileText size={17} />
+            <strong>草稿预览</strong>
+          </span>
+          {draft ? <small>检查字段后确认，系统会立即调用 Codex</small> : <small>生成后会显示在这里</small>}
+        </div>
+        {draft ? (
+          <>
+            <StructuredLessonFields studentForm={studentForm} courseForm={courseForm} updateStudent={updateStudent} updateCourse={updateCourse} />
+            <div className="form-footer">
+              <button type="button" className="primary-button" disabled={saving || !courseForm.desiredContent.trim() || !studentForm.name.trim()} onClick={saveDraft}>
+                {saving ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
+                确认并调用 Codex
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="quiet-empty">粘贴需求后生成草稿</div>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -1316,7 +1623,7 @@ function courseToEditableForm(course: Course) {
     textbook: course.textbook || "",
     lessonKind: course.lessonKind || emptyCourseForm.lessonKind,
     desiredContent: course.desiredContent || "",
-    lessonTime: course.lessonTime || "",
+    lessonTime: toDatetimeLocalValue(course.lessonTime),
     durationMinutes: course.durationMinutes || emptyCourseForm.durationMinutes,
     localFiles: course.localFiles || "",
     notes: course.notes || ""
@@ -1324,31 +1631,56 @@ function courseToEditableForm(course: Course) {
 }
 
 function CourseSettingsPanel({
+  student,
   course,
   onSaved,
   onCancel,
   onError
 }: {
+  student: Student;
   course: Course;
   onSaved: () => Promise<void> | void;
   onCancel: () => void;
   onError: (message: string) => void;
 }) {
   const [form, setForm] = useState(() => courseToEditableForm(course));
+  const [studentForm, setStudentForm] = useState({
+    name: student.name,
+    stage: student.stage || course.stage || "高中数学",
+    notes: student.notes || "",
+    weakPoints: student.weakPoints || "",
+    commonMistakes: student.commonMistakes || "",
+    parentNotes: student.parentNotes || "",
+    nextLessonSuggestion: student.nextLessonSuggestion || ""
+  });
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setForm(courseToEditableForm(course));
-  }, [course.id]);
+    setStudentForm({
+      name: student.name,
+      stage: student.stage || course.stage || "高中数学",
+      notes: student.notes || "",
+      weakPoints: student.weakPoints || "",
+      commonMistakes: student.commonMistakes || "",
+      parentNotes: student.parentNotes || "",
+      nextLessonSuggestion: student.nextLessonSuggestion || ""
+    });
+  }, [course.id, student.id, student.name, student.stage, student.notes, student.weakPoints, student.commonMistakes, student.parentNotes, student.nextLessonSuggestion]);
 
   function update(name: string, value: string | number) {
     setForm((current) => ({ ...current, [name]: value }));
+  }
+
+  function updateStudent(name: string, value: string) {
+    setStudentForm((current) => ({ ...current, [name]: value }));
   }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setSaving(true);
     try {
+      await api.patch<{ student: Student }>(`/api/students/${student.id}`, studentForm);
       await api.patch<{ course: Course }>(`/api/courses/${course.id}`, form);
       await onSaved();
       onCancel();
@@ -1371,81 +1703,7 @@ function CourseSettingsPanel({
         </button>
       </div>
 
-      <div className="segmented">
-        <button type="button" className={form.type === "formal" ? "active" : ""} onClick={() => update("type", "formal")}>
-          正式课
-        </button>
-        <button type="button" className={form.type === "trial" ? "active" : ""} onClick={() => update("type", "trial")}>
-          试听课
-        </button>
-      </div>
-
-      <div className="form-grid">
-        <label>
-          学段
-          <select value={form.stage} onChange={(event) => update("stage", event.target.value)}>
-            <option>高中数学</option>
-            <option>初中数学</option>
-            <option>高等数学</option>
-            <option>其他</option>
-          </select>
-        </label>
-        <label>
-          年级
-          <input value={form.grade} onChange={(event) => update("grade", event.target.value)} />
-        </label>
-        <label>
-          分数
-          <input value={form.score} onChange={(event) => update("score", event.target.value)} />
-        </label>
-        <label>
-          上课时间
-          <input type="datetime-local" value={form.lessonTime} onChange={(event) => update("lessonTime", event.target.value)} />
-        </label>
-        <label>
-          课长
-          <input
-            type="number"
-            min={20}
-            max={240}
-            step={5}
-            value={form.durationMinutes}
-            onChange={(event) => update("durationMinutes", Number(event.target.value))}
-          />
-        </label>
-        <label>
-          地区
-          <input value={form.province} onChange={(event) => update("province", event.target.value)} />
-        </label>
-        <label>
-          教材版本
-          <input value={form.textbook} onChange={(event) => update("textbook", event.target.value)} />
-        </label>
-        <label>
-          课程性质
-          <select value={form.lessonKind} onChange={(event) => update("lessonKind", event.target.value)}>
-            <option>专题提升</option>
-            <option>同步巩固</option>
-            <option>错题复盘</option>
-            <option>培优拓展</option>
-            <option>考前冲刺</option>
-            <option>作业答疑</option>
-          </select>
-        </label>
-      </div>
-
-      <label>
-        想听的内容
-        <textarea value={form.desiredContent} onChange={(event) => update("desiredContent", event.target.value)} rows={3} required />
-      </label>
-      <label>
-        本地题目/资料路径
-        <textarea value={form.localFiles} onChange={(event) => update("localFiles", event.target.value)} rows={2} />
-      </label>
-      <label>
-        备注
-        <textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} rows={2} />
-      </label>
+      <StructuredLessonFields studentForm={studentForm} courseForm={form} updateStudent={updateStudent} updateCourse={update} />
 
       <div className="form-footer">
         <button type="button" className="ghost-button" onClick={onCancel}>
@@ -1461,11 +1719,13 @@ function CourseSettingsPanel({
 }
 
 function CourseDetail({
+  student,
   course,
   onRefresh,
   onDeleteCourse,
   onError
 }: {
+  student: Student;
   course: Course | null;
   onRefresh: () => Promise<void> | void;
   onDeleteCourse: (course: Course) => Promise<void>;
@@ -1724,6 +1984,7 @@ function CourseDetail({
 
       {editing ? (
         <CourseSettingsPanel
+          student={student}
           course={course}
           onSaved={onRefresh}
           onCancel={() => setEditing(false)}

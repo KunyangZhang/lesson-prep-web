@@ -54,6 +54,7 @@ export interface Course {
   durationMinutes: number;
   localFiles: string;
   notes: string;
+  codexPromptOverride?: string;
   outputDir: string;
   status: CourseStatus;
   jobId?: string;

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { listCourseFiles } from "./files.js";
+import { coreOutputFileNames, ensureCourseClassroomPdfFileName, recoverCourseOutputDir } from "./courseOutput.js";
 import {
   createCalendarEventWithLarkCli,
   createDriveFolderWithLarkCli,
@@ -290,10 +291,14 @@ async function createLessonCalendarEvent(store: Store, course: Course, job: Job,
 export async function syncCourseToFeishu(store: Store, course: Course, job: Job) {
   if (process.env.FEISHU_SYNC_ENABLED === "false") return;
   if (job.status !== "completed") return;
+  const recovery = recoverCourseOutputDir(course, job);
+  if (recovery.changed) store.save();
   if (!fs.existsSync(course.outputDir)) return;
+  const student = store.findStudent(course.studentId);
+  ensureCourseClassroomPdfFileName(course, student?.name);
   const target = notifyTargetFromEnv();
 
-  const wanted = new Set(["老师逐字稿.md", "知识点详解.md", "课后反馈.md", "课堂课件.pdf"]);
+  const wanted = new Set(coreOutputFileNames(course, student?.name));
   const files = listCourseFiles(course.outputDir).filter((file) => wanted.has(file.name));
   const results: SyncResult[] = [];
   const deleteResult = await deletePreviousCourseFolder(store, course, job);

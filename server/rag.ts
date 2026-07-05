@@ -14,8 +14,7 @@ import { decodeUploadName, hashId, nowIso, sanitizeFilename } from "./store.js";
 const indexVersion = 3;
 const ragIndexPath = path.join(config.dataDir, "rag-index.json");
 const ragSqlitePath = path.join(config.dataDir, "rag-index.sqlite");
-const supportedExtensions = new Set([".md", ".markdown", ".txt", ".csv", ".docx", ".pdf", ".xlsx"]);
-const conversionExtensions = new Set([".doc"]);
+const supportedExtensions = new Set([".md", ".markdown", ".txt", ".csv", ".doc", ".docx", ".pdf", ".xlsx"]);
 
 type RagMaterialStatus = Material["status"] | "needs_conversion";
 type RagSourceKind = "exam" | "mock" | "local" | "adapted" | "self_written" | "unknown";
@@ -92,6 +91,15 @@ interface RagIndexDb {
   snippets: RagSnippetRecord[];
 }
 
+interface RagEmbeddingRecord {
+  id: string;
+  materialId: string;
+  vector: number[];
+  model: string;
+  dimensions: number;
+  updatedAt: string;
+}
+
 interface SqliteRagRow {
   id: string;
   payload: string;
@@ -106,6 +114,8 @@ export interface RagScoreParts {
   role: number;
   phrase: number;
   answer: number;
+  vector: number;
+  boost: number;
 }
 
 export interface RagSearchResult {
@@ -201,6 +211,8 @@ const allKnownTags = [...stageTags, ...topicTags, ...questionTags, ...roleTags];
 let cachedIndex: RagIndexDb | null = null;
 let cachedSearchCache: SearchCache | null = null;
 let sqliteDb: DatabaseSync | null = null;
+let queryEmbeddingDisabledUntil = 0;
+const queryEmbeddingCache = new Map<string, { vector: number[]; updatedAt: number }>();
 
 function emptyIndex(): RagIndexDb {
   return {
@@ -226,6 +238,134 @@ function jsonStringify(value: unknown) {
 
 function jsonParse<T>(value: string): T {
   return JSON.parse(value) as T;
+}
+
+function isEmbeddingEnabled() {
+  return config.ragEmbeddingProvider.toLowerCase() === "ark" && Boolean(config.ragEmbeddingApiKey);
+}
+
+function parseBoostPatterns() {
+  return config.ragBoostPatterns
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [pattern, score] = entry.split(":");
+      const boost = Number(score);
+      return {
+        pattern: normalizeText(pattern || ""),
+        boost: Number.isFinite(boost) ? boost : 0
+      };
+    })
+    .filter((entry) => entry.pattern && entry.boost !== 0);
+}
+
+function materialBoost(material: RagIndexedMaterial) {
+  const text = normalizeText(`${material.title} ${material.path}`);
+  return parseBoostPatterns().reduce((sum, entry) => (text.includes(entry.pattern) ? sum + entry.boost : sum), 0);
+}
+
+function vectorToBuffer(vector: number[]) {
+  return Buffer.from(new Float32Array(vector).buffer);
+}
+
+function bufferToVector(value: Buffer | Uint8Array) {
+  const buffer = Buffer.from(value);
+  const copy = new ArrayBuffer(buffer.byteLength);
+  new Uint8Array(copy).set(buffer);
+  return [...new Float32Array(copy)];
+}
+
+function bufferToFloat32Array(value: Buffer | Uint8Array) {
+  const buffer = Buffer.from(value);
+  const copy = new ArrayBuffer(buffer.byteLength);
+  new Uint8Array(copy).set(buffer);
+  return new Float32Array(copy);
+}
+
+function cosineSimilarity(a: ArrayLike<number>, b: ArrayLike<number>) {
+  const length = Math.min(a.length, b.length);
+  if (length === 0) return 0;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let index = 0; index < length; index += 1) {
+    dot += a[index] * b[index];
+    normA += a[index] * a[index];
+    normB += b[index] * b[index];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+function trimEmbeddingText(text: string) {
+  return text.replace(/\s+/g, " ").trim().slice(0, 6000);
+}
+
+function extractArkEmbeddingsPayload(data: unknown) {
+  const payload = data as {
+    data?: Array<{ embedding?: number[] }> | { embedding?: number[] };
+    embeddings?: number[][];
+    embedding?: number[];
+  };
+  const embeddings = Array.isArray(payload.data)
+    ? payload.data.map((item) => item.embedding).filter((item): item is number[] => Array.isArray(item))
+    : payload.data && !Array.isArray(payload.data) && Array.isArray(payload.data.embedding)
+    ? [payload.data.embedding]
+    : Array.isArray(payload.embeddings)
+    ? payload.embeddings
+    : Array.isArray(payload.embedding)
+    ? [payload.embedding]
+    : [];
+  return embeddings.filter((embedding) => embedding.every((value) => typeof value === "number" && Number.isFinite(value)));
+}
+
+async function embedTexts(texts: string[]) {
+  if (!isEmbeddingEnabled()) return [];
+  const input = texts.map((text) => ({ type: "text", text: trimEmbeddingText(text) })).filter((item) => item.text);
+  if (input.length === 0) return [];
+  const response = await fetch(config.ragEmbeddingEndpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.ragEmbeddingApiKey}`
+    },
+    body: JSON.stringify({
+      model: config.ragEmbeddingModel,
+      input
+    })
+  });
+  const responseText = await response.text();
+  if (!response.ok) {
+    throw new Error(`Ark embedding failed: ${response.status} ${responseText.slice(0, 500)}`);
+  }
+  const payload = responseText ? JSON.parse(responseText) : {};
+  const embeddings = extractArkEmbeddingsPayload(payload);
+  if (embeddings.length !== input.length) {
+    throw new Error(`Ark embedding returned ${embeddings.length} vectors for ${input.length} inputs.`);
+  }
+  return embeddings;
+}
+
+async function embedQueryText(query: string) {
+  if (!isEmbeddingEnabled()) return undefined;
+  if (Date.now() < queryEmbeddingDisabledUntil) return undefined;
+  const key = `${config.ragEmbeddingModel}:${trimEmbeddingText(query)}`;
+  const cached = queryEmbeddingCache.get(key);
+  if (cached && Date.now() - cached.updatedAt < 24 * 60 * 60 * 1000) return cached.vector;
+  try {
+    const vector = (await embedTexts([query]))[0];
+    if (!vector) return undefined;
+    queryEmbeddingCache.set(key, { vector, updatedAt: Date.now() });
+    if (queryEmbeddingCache.size > 200) {
+      const oldestKey = [...queryEmbeddingCache.entries()].sort((a, b) => a[1].updatedAt - b[1].updatedAt)[0]?.[0];
+      if (oldestKey) queryEmbeddingCache.delete(oldestKey);
+    }
+    return vector;
+  } catch {
+    queryEmbeddingDisabledUntil = Date.now() + 10 * 60 * 1000;
+    return undefined;
+  }
 }
 
 export function tokenize(input: string) {
@@ -319,11 +459,38 @@ function chunkText(text: string) {
   const chunkSize = 1800;
   const overlap = 160;
 
-  for (let start = 0; start < normalized.length && chunks.length < 120; start += chunkSize - overlap) {
+  for (let start = 0; start < normalized.length && chunks.length < 800; start += chunkSize - overlap) {
     chunks.push(normalized.slice(start, start + chunkSize));
   }
 
   return chunks.filter((chunk) => chunk.trim().length > 8);
+}
+
+function formulaPlaceholderMetrics(text: string) {
+  const compact = text.replace(/\s/g, "");
+  const nonWhitespaceLength = compact.length;
+  const formulaCount = countMatches(text, /\[公式\]/g);
+  const imageCount = countMatches(text, /\[图片\]/g);
+  const chineseCount = countMatches(text, /[\u4e00-\u9fff]/g);
+  const formulaCharRatio = (formulaCount * "[公式]".length) / Math.max(1, nonWhitespaceLength);
+  const chineseRatio = chineseCount / Math.max(1, nonWhitespaceLength);
+  return {
+    nonWhitespaceLength,
+    formulaCount,
+    imageCount,
+    chineseCount,
+    formulaCharRatio,
+    chineseRatio
+  };
+}
+
+function isFormulaPlaceholderHeavy(text: string) {
+  const metrics = formulaPlaceholderMetrics(text);
+  if (metrics.formulaCount < 8) return false;
+  if (metrics.chineseCount < 30) return true;
+  if (metrics.formulaCharRatio >= 0.35) return true;
+  if (metrics.formulaCount >= 20 && metrics.chineseRatio < 0.25) return true;
+  return false;
 }
 
 async function extractText(filePath: string) {
@@ -336,10 +503,12 @@ async function extractText(filePath: string) {
     return extractDocxText(filePath);
   }
 
+  if (ext === ".doc") {
+    return extractLegacyDocText(filePath);
+  }
+
   if (ext === ".pdf") {
-    const buffer = await fs.promises.readFile(filePath);
-    const result = await pdfParse(buffer);
-    return { text: result.text, formulaCount: 0, imageCount: 0 };
+    return extractPdfText(filePath);
   }
 
   if (ext === ".xlsx") {
@@ -347,6 +516,109 @@ async function extractText(filePath: string) {
   }
 
   throw new Error(`Unsupported file type: ${ext || "unknown"}`);
+}
+
+async function extractPdfText(filePath: string) {
+  const result = spawnSync("pdftotext", ["-enc", "UTF-8", "-layout", filePath, "-"], {
+    encoding: "utf8",
+    maxBuffer: 256 * 1024 * 1024
+  });
+  if (result.status === 0 && result.stdout.trim().length > 200) {
+    return { text: cleanPdfMathText(result.stdout), formulaCount: 0, imageCount: 0 };
+  }
+
+  const buffer = await fs.promises.readFile(filePath);
+  const parsed = await pdfParse(buffer);
+  if (parsed.text.trim().length > 0) return { text: parsed.text, formulaCount: 0, imageCount: 0 };
+
+  const detail = result.error?.message || result.stderr?.toString().trim();
+  throw new Error(`PDF text extraction failed${detail ? `: ${detail}` : ""}`);
+}
+
+function cleanPdfMathText(text: string) {
+  return text
+    .split(/\r?\n/)
+    .map(cleanPdfMathLine)
+    .join("\n")
+    .replace(/\{\s+\(/g, "{(")
+    .replace(/\)\s+\|/g, ")|")
+    .replace(/\|\s+/g, "|")
+    .replace(/\s+\}/g, "}")
+    .replace(/\s+([,，；;])/g, "$1")
+    .replace(/([A-Za-z])\s+\*/g, "$1*")
+    .replace(/log\s*([0-9]+)/g, "log_$1")
+    .replace(/([xyabcmn])([0-9]{1,2})(?=\s|[,，。；;)\]}]|$)/g, "$1^$2")
+    .replace(/\s{3,}/g, "  ");
+}
+
+function cleanPdfMathLine(line: string) {
+  let cleaned = line.replace(/\uf0f4/g, "|").replace(/\uf0cb/g, "");
+  cleaned = replaceAlternatingSymbol(cleaned, "\uf0ee", "(", ")");
+  cleaned = replaceAlternatingSymbol(cleaned, "\uf0f6", "[", "]");
+  cleaned = replaceAlternatingSymbol(cleaned, "\uf0e4", "{", "}", true);
+  cleaned = cleaned.replace(/\uf0e0\s*\uf0e1\s*\uf0e2/g, "√").replace(/\uf0e0/g, "√(").replace(/\uf0e1/g, "").replace(/\uf0e2/g, ")");
+  return cleaned;
+}
+
+function replaceAlternatingSymbol(line: string, symbol: string, open: string, close: string, closeIfAlreadyOpen = false) {
+  const indexes = [...line.matchAll(new RegExp(symbol, "g"))].map((match) => match.index ?? -1).filter((index) => index >= 0);
+  if (indexes.length === 0) return line;
+  let nextOpen = true;
+  if (closeIfAlreadyOpen) {
+    const first = indexes[0];
+    nextOpen = line.lastIndexOf(open, first) <= line.lastIndexOf(close, first);
+  }
+  return line.replace(new RegExp(symbol, "g"), () => {
+    const value = nextOpen ? open : close;
+    nextOpen = !nextOpen;
+    return value;
+  });
+}
+
+function findExecutable(candidates: string[]) {
+  for (const candidate of candidates) {
+    const result = spawnSync("which", [candidate], { encoding: "utf8" });
+    if (result.status === 0 && result.stdout.trim()) return result.stdout.trim().split(/\r?\n/)[0];
+  }
+  return "";
+}
+
+async function extractLegacyDocText(filePath: string) {
+  const converter = findExecutable(["soffice", "libreoffice"]);
+  if (!converter) {
+    throw new Error("旧版 .doc 暂无法解析：服务器未安装 LibreOffice/soffice 转换工具。");
+  }
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "lesson-prep-doc-"));
+  try {
+    const result = spawnSync(
+      converter,
+      [
+        "--headless",
+        "--nologo",
+        "--nofirststartwizard",
+        "--convert-to",
+        "docx",
+        "--outdir",
+        tempDir,
+        filePath
+      ],
+      {
+        cwd: config.projectRoot,
+        encoding: "utf8",
+        timeout: config.docConversionTimeoutMs,
+        maxBuffer: 10 * 1024 * 1024
+      }
+    );
+    const convertedPath = path.join(tempDir, `${path.basename(filePath, path.extname(filePath))}.docx`);
+    if (result.error || result.status !== 0 || !fs.existsSync(convertedPath)) {
+      const detail = result.error?.message || result.stderr || result.stdout || `exit ${result.status ?? "unknown"}`;
+      throw new Error(`旧版 .doc 转换失败：${String(detail).trim()}`);
+    }
+    return await extractDocxText(convertedPath);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 async function extractDocxText(filePath: string) {
@@ -510,24 +782,40 @@ async function convertMathTypeTargets(zip: JSZip, targets: string[]) {
     }
     if (tempFiles.length === 0) return formulas;
 
-    const result = spawnSync("ruby", [scriptPath, ...tempFiles], {
-      cwd: config.projectRoot,
-      encoding: "utf8",
-      env: { ...process.env, RUBYOPT: "-W0" },
-      maxBuffer: 10 * 1024 * 1024,
-      timeout: 120_000
-    });
-    if (result.error) return formulas;
-
-    const lines = (result.stdout || "").split(/\r?\n/);
-    tempTargets.forEach((target, index) => {
-      const formula = normalizeFormulaText(lines[index] || "");
-      formulas.set(target, formula || "[公式]");
-    });
+    const batchSize = Number(process.env.RAG_MATHTYPE_BATCH_SIZE || 40);
+    for (let start = 0; start < tempFiles.length; start += batchSize) {
+      convertMathTypeBatch(tempFiles.slice(start, start + batchSize), tempTargets.slice(start, start + batchSize));
+    }
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
   return formulas;
+
+  function convertMathTypeBatch(batchFiles: string[], batchTargets: string[]) {
+    if (batchFiles.length === 0) return;
+    const timeoutMs = Number(process.env.RAG_MATHTYPE_TIMEOUT_MS || 120_000);
+    const result = spawnSync("ruby", [scriptPath, ...batchFiles], {
+      cwd: config.projectRoot,
+      encoding: "utf8",
+      env: { ...process.env, RUBYOPT: "-W0" },
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: timeoutMs
+    });
+
+    const lines = result.error ? [] : (result.stdout || "").split(/\r?\n/);
+    const complete = !result.error && lines.length >= batchTargets.length;
+    if (!complete && batchFiles.length > 1) {
+      const midpoint = Math.ceil(batchFiles.length / 2);
+      convertMathTypeBatch(batchFiles.slice(0, midpoint), batchTargets.slice(0, midpoint));
+      convertMathTypeBatch(batchFiles.slice(midpoint), batchTargets.slice(midpoint));
+      return;
+    }
+
+    batchTargets.forEach((target, index) => {
+      const formula = normalizeFormulaText(lines[index] || "");
+      formulas.set(target, formula || "[公式]");
+    });
+  }
 }
 
 function normalizeFormulaText(value: string) {
@@ -628,6 +916,8 @@ function getSqliteDb() {
   sqliteDb.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
+    PRAGMA busy_timeout = 30000;
+    PRAGMA wal_autocheckpoint = 1000;
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -663,6 +953,15 @@ function getSqliteDb() {
       payload TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_snippets_material ON snippets(materialId);
+    CREATE TABLE IF NOT EXISTS embeddings (
+      id TEXT PRIMARY KEY,
+      materialId TEXT NOT NULL,
+      model TEXT NOT NULL,
+      dimensions INTEGER NOT NULL,
+      vector BLOB NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_embeddings_material ON embeddings(materialId);
     CREATE VIRTUAL TABLE IF NOT EXISTS rag_fts USING fts5(
       id UNINDEXED,
       type UNINDEXED,
@@ -680,12 +979,22 @@ function getSqliteDb() {
       DELETE FROM materials;
       DELETE FROM questions;
       DELETE FROM snippets;
+      DELETE FROM embeddings;
       DELETE FROM rag_fts;
     `);
     sqliteDb.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('version', ?)").run(String(indexVersion));
     sqliteDb.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('updatedAt', ?)").run(nowIso());
   }
   return sqliteDb;
+}
+
+export function checkpointRagIndex(mode: "PASSIVE" | "FULL" | "RESTART" | "TRUNCATE" = "TRUNCATE") {
+  const db = getSqliteDb();
+  return db.prepare(`PRAGMA wal_checkpoint(${mode})`).all() as Array<{
+    busy: number;
+    log: number;
+    checkpointed: number;
+  }>;
 }
 
 function sqliteUpdatedAt(db = getSqliteDb()) {
@@ -697,6 +1006,13 @@ function setSqliteUpdatedAt(db = getSqliteDb()) {
   const updatedAt = nowIso();
   db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('updatedAt', ?)").run(updatedAt);
   return updatedAt;
+}
+
+function writeIndexMetadata(index: RagIndexDb) {
+  fs.mkdirSync(path.dirname(ragIndexPath), { recursive: true });
+  const tmpPath = `${ragIndexPath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify({ version: index.version, updatedAt: index.updatedAt, sqlitePath: ragSqlitePath }, null, 2), "utf8");
+  fs.renameSync(tmpPath, ragIndexPath);
 }
 
 function readIndexFromSqlite(): RagIndexDb {
@@ -719,6 +1035,107 @@ function readIndexFromSqlite(): RagIndexDb {
   };
 }
 
+function readMaterialFromSqlite(materialId: string) {
+  const row = getSqliteDb().prepare("SELECT payload FROM materials WHERE id = ?").get(materialId) as { payload: string } | undefined;
+  return row ? jsonParse<RagIndexedMaterial>(row.payload) : undefined;
+}
+
+function readQuestionsForMaterial(materialId: string) {
+  return (getSqliteDb().prepare("SELECT payload FROM questions WHERE materialId = ? ORDER BY id").all(materialId) as Array<{ payload: string }>).map((row) =>
+    jsonParse<RagQuestionRecord>(row.payload)
+  );
+}
+
+function readMaterialsByIds(ids: string[]) {
+  const uniqueIds = unique(ids.filter(Boolean));
+  const materials = new Map<string, RagIndexedMaterial>();
+  if (uniqueIds.length === 0) return materials;
+  const db = getSqliteDb();
+  const batchSize = 200;
+  for (let start = 0; start < uniqueIds.length; start += batchSize) {
+    const batch = uniqueIds.slice(start, start + batchSize);
+    const placeholders = batch.map(() => "?").join(",");
+    const rows = db.prepare(`SELECT id, payload FROM materials WHERE id IN (${placeholders})`).all(...batch) as Array<{ id: string; payload: string }>;
+    for (const row of rows) materials.set(row.id, jsonParse<RagIndexedMaterial>(row.payload));
+  }
+  return materials;
+}
+
+function readEmbeddingsByIds(ids: string[]) {
+  const uniqueIds = unique(ids.filter(Boolean));
+  if (uniqueIds.length === 0) return new Map<string, RagEmbeddingRecord>();
+  const db = getSqliteDb();
+  const records = new Map<string, RagEmbeddingRecord>();
+  const batchSize = 200;
+  for (let start = 0; start < uniqueIds.length; start += batchSize) {
+    const batch = uniqueIds.slice(start, start + batchSize);
+    const placeholders = batch.map(() => "?").join(",");
+    const rows = db.prepare(`SELECT id, materialId, model, dimensions, vector, updatedAt FROM embeddings WHERE id IN (${placeholders})`).all(...batch) as Array<{
+      id: string;
+      materialId: string;
+      model: string;
+      dimensions: number;
+      vector: Buffer | Uint8Array;
+      updatedAt: string;
+    }>;
+    for (const row of rows) {
+      records.set(row.id, {
+        id: row.id,
+        materialId: row.materialId,
+        model: row.model,
+        dimensions: row.dimensions,
+        vector: bufferToVector(row.vector),
+        updatedAt: row.updatedAt
+      });
+    }
+  }
+  return records;
+}
+
+function countEmbeddingsForMaterial(materialId: string) {
+  const row = getSqliteDb().prepare("SELECT COUNT(*) AS count FROM embeddings WHERE materialId = ?").get(materialId) as { count: number };
+  return row.count;
+}
+
+function writeEmbeddingRecordsToSqlite(embeddings: RagEmbeddingRecord[]) {
+  if (embeddings.length === 0) return;
+  const db = getSqliteDb();
+  const insertEmbedding = db.prepare("INSERT OR REPLACE INTO embeddings (id, materialId, model, dimensions, vector, updatedAt) VALUES (?, ?, ?, ?, ?, ?)");
+  try {
+    db.exec("BEGIN IMMEDIATE");
+    for (const embedding of embeddings) {
+      insertEmbedding.run(
+        embedding.id,
+        embedding.materialId,
+        embedding.model,
+        embedding.dimensions,
+        vectorToBuffer(embedding.vector),
+        embedding.updatedAt
+      );
+    }
+    setSqliteUpdatedAt(db);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function readQuestionsByFingerprints(fingerprints: string[]) {
+  const uniqueFingerprints = unique(fingerprints.filter(Boolean));
+  if (uniqueFingerprints.length === 0) return [];
+  const db = getSqliteDb();
+  const questions: RagQuestionRecord[] = [];
+  const batchSize = 200;
+  for (let start = 0; start < uniqueFingerprints.length; start += batchSize) {
+    const batch = uniqueFingerprints.slice(start, start + batchSize);
+    const placeholders = batch.map(() => "?").join(",");
+    const rows = db.prepare(`SELECT payload FROM questions WHERE fingerprint IN (${placeholders}) ORDER BY materialId, id`).all(...batch) as Array<{ payload: string }>;
+    questions.push(...rows.map((row) => jsonParse<RagQuestionRecord>(row.payload)));
+  }
+  return questions;
+}
+
 function writeFullIndexToSqlite(index: RagIndexDb) {
   const db = getSqliteDb();
   const insertMaterial = db.prepare("INSERT INTO materials (id, path, status, size, mtimeMs, updatedAt, payload) VALUES (?, ?, ?, ?, ?, ?, ?)");
@@ -729,7 +1146,7 @@ function writeFullIndexToSqlite(index: RagIndexDb) {
   const insertFts = db.prepare("INSERT INTO rag_fts (id, type, materialId, title, body, context, tags) VALUES (?, ?, ?, ?, ?, ?, ?)");
   try {
     db.exec("BEGIN");
-    db.exec("DELETE FROM materials; DELETE FROM questions; DELETE FROM snippets; DELETE FROM rag_fts;");
+    db.exec("DELETE FROM materials; DELETE FROM questions; DELETE FROM snippets; DELETE FROM embeddings; DELETE FROM rag_fts;");
     for (const material of index.materials) insertMaterial.run(material.id, material.path, material.status, material.size, material.mtimeMs, material.updatedAt, jsonStringify(material));
     for (const question of index.questions) {
       insertQuestion.run(
@@ -758,6 +1175,84 @@ function writeFullIndexToSqlite(index: RagIndexDb) {
   }
 }
 
+function writeMaterialRecordsToSqlite(
+  material: RagIndexedMaterial,
+  questions: RagQuestionRecord[],
+  snippets: RagSnippetRecord[],
+  embeddings: RagEmbeddingRecord[] = [],
+  affectedQuestions: RagQuestionRecord[] = []
+) {
+  const db = getSqliteDb();
+  const insertMaterial = db.prepare("INSERT OR REPLACE INTO materials (id, path, status, size, mtimeMs, updatedAt, payload) VALUES (?, ?, ?, ?, ?, ?, ?)");
+  const insertQuestion = db.prepare(
+    "INSERT OR REPLACE INTO questions (id, materialId, fingerprint, duplicateClusterId, isClusterRepresentative, answerQuality, hasAnswer, sourceKind, scorePriority, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  );
+  const insertSnippet = db.prepare("INSERT OR REPLACE INTO snippets (id, materialId, kind, payload) VALUES (?, ?, ?, ?)");
+  const insertEmbedding = db.prepare("INSERT OR REPLACE INTO embeddings (id, materialId, model, dimensions, vector, updatedAt) VALUES (?, ?, ?, ?, ?, ?)");
+  const insertFts = db.prepare("INSERT INTO rag_fts (id, type, materialId, title, body, context, tags) VALUES (?, ?, ?, ?, ?, ?, ?)");
+
+  try {
+    db.exec("BEGIN IMMEDIATE");
+    db.prepare("DELETE FROM rag_fts WHERE materialId = ?").run(material.id);
+    db.prepare("DELETE FROM questions WHERE materialId = ?").run(material.id);
+    db.prepare("DELETE FROM snippets WHERE materialId = ?").run(material.id);
+    db.prepare("DELETE FROM embeddings WHERE materialId = ?").run(material.id);
+    insertMaterial.run(material.id, material.path, material.status, material.size, material.mtimeMs, material.updatedAt, jsonStringify(material));
+
+    for (const question of questions) {
+      insertQuestion.run(
+        question.id,
+        question.materialId,
+        question.fingerprint || questionFingerprint(question.text),
+        question.duplicateClusterId || question.fingerprint || questionFingerprint(question.text),
+        question.isClusterRepresentative ? 1 : 0,
+        question.answerQuality || answerQualityForQuestion(question),
+        question.hasAnswer ? 1 : 0,
+        question.sourceKind,
+        questionPriority(question),
+        jsonStringify(question)
+      );
+      insertFts.run(question.id, "question", question.materialId, question.title, `${question.text}\n${question.solution}`, question.context, question.tags.join(" "));
+    }
+    for (const snippet of snippets) {
+      insertSnippet.run(snippet.id, snippet.materialId, snippet.kind, jsonStringify(snippet));
+      insertFts.run(snippet.id, "snippet", snippet.materialId, snippet.title, snippet.text, snippet.context, snippet.tags.join(" "));
+    }
+    for (const embedding of embeddings) {
+      insertEmbedding.run(
+        embedding.id,
+        embedding.materialId,
+        embedding.model,
+        embedding.dimensions,
+        vectorToBuffer(embedding.vector),
+        embedding.updatedAt
+      );
+    }
+
+    for (const question of affectedQuestions) {
+      if (question.materialId === material.id) continue;
+      insertQuestion.run(
+        question.id,
+        question.materialId,
+        question.fingerprint || questionFingerprint(question.text),
+        question.duplicateClusterId || question.fingerprint || questionFingerprint(question.text),
+        question.isClusterRepresentative ? 1 : 0,
+        question.answerQuality || answerQualityForQuestion(question),
+        question.hasAnswer ? 1 : 0,
+        question.sourceKind,
+        questionPriority(question),
+        jsonStringify(question)
+      );
+    }
+
+    setSqliteUpdatedAt(db);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function ensureSqliteSeeded() {
   const db = getSqliteDb();
   const count = db.prepare("SELECT COUNT(*) AS count FROM materials").get() as { count: number };
@@ -772,11 +1267,42 @@ function saveIndex(index: RagIndexDb) {
   index.updatedAt = nowIso();
   index = rebuildDuplicateClusters(index);
   writeFullIndexToSqlite(index);
-  fs.mkdirSync(path.dirname(ragIndexPath), { recursive: true });
-  const tmpPath = `${ragIndexPath}.${process.pid}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify({ version: index.version, updatedAt: index.updatedAt, sqlitePath: ragSqlitePath }, null, 2), "utf8");
-  fs.renameSync(tmpPath, ragIndexPath);
+  writeIndexMetadata(index);
   cachedIndex = index;
+  cachedSearchCache = null;
+}
+
+function saveSingleMaterialIndex(
+  material: RagIndexedMaterial,
+  questions: RagQuestionRecord[] = [],
+  snippets: RagSnippetRecord[] = [],
+  embeddings: RagEmbeddingRecord[] = [],
+  affectedFingerprints: string[] = []
+) {
+  const relatedQuestions = readQuestionsByFingerprints(affectedFingerprints).filter((question) => question.materialId !== material.id);
+  const scopedIndex = rebuildDuplicateClusters({
+    version: indexVersion,
+    updatedAt: nowIso(),
+    materials: [],
+    questions: [...relatedQuestions, ...questions],
+    snippets: []
+  });
+  const nextQuestions = scopedIndex.questions.filter((question) => question.materialId === material.id);
+  const affectedQuestions = scopedIndex.questions.filter((question) => question.materialId !== material.id);
+  material.questionCount = nextQuestions.length;
+  material.snippetCount = snippets.length;
+  material.chunkCount = nextQuestions.length + snippets.length;
+  material.updatedAt = nowIso();
+  writeMaterialRecordsToSqlite(material, nextQuestions, snippets, embeddings, affectedQuestions);
+  const metadataIndex = {
+    version: indexVersion,
+    updatedAt: sqliteUpdatedAt(),
+    materials: [],
+    questions: [],
+    snippets: []
+  };
+  writeIndexMetadata(metadataIndex);
+  cachedIndex = null;
   cachedSearchCache = null;
 }
 
@@ -878,12 +1404,10 @@ function materialNeedsIndex(store: Store, index: RagIndexDb, filePath: string) {
   const material = store.data.materials.find((item) => item.id === id);
   const indexed = index.materials.find((item) => item.id === id);
   const ext = path.extname(resolved).toLowerCase();
-  if (conversionExtensions.has(ext)) return material?.status !== "needs_conversion";
   if (!supportedExtensions.has(ext)) return material?.status !== "unsupported";
   if (!material || material.status === "pending") return true;
-  if (material.status === "failed") {
-    return indexed?.size !== stat.size || Math.abs((indexed?.mtimeMs || 0) - stat.mtimeMs) > 1;
-  }
+  if (material.status === "needs_conversion") return true;
+  if (material.status === "failed") return true;
   if (!indexed || indexed.status !== "indexed" || indexed.chunkCount === 0) return true;
   return indexed.size !== stat.size || Math.abs((indexed.mtimeMs || 0) - stat.mtimeMs) > 1;
 }
@@ -921,11 +1445,11 @@ export function listMaterialCatalog(store: Store, root = path.join(config.worksp
       title: decodeUploadName(path.basename(resolved)),
       path: resolved,
       size: stat.size,
-      status: conversionExtensions.has(ext) ? "needs_conversion" : "pending",
+      status: supportedExtensions.has(ext) ? "pending" : "unsupported",
       chunkCount: 0,
       questionCount: 0,
       snippetCount: 0,
-      error: conversionExtensions.has(ext) ? "旧版 .doc 暂不解析正文，请转换为 .docx 后重建索引。" : "尚未索引。",
+      error: supportedExtensions.has(ext) ? "尚未索引。" : `Unsupported file type: ${ext}`,
       createdAt: now,
       updatedAt: now
     });
@@ -994,11 +1518,11 @@ export function registerMaterialFile(store: Store, filePath: string, mimeType?: 
     path: resolved,
     size: stat.size,
     mimeType,
-    status: conversionExtensions.has(ext) ? "needs_conversion" : "pending",
+    status: supportedExtensions.has(ext) ? "pending" : "unsupported",
     chunkCount: 0,
     questionCount: 0,
     snippetCount: 0,
-    error: conversionExtensions.has(ext) ? "旧版 .doc 暂不解析正文，请转换为 .docx 后重建索引。" : "已上传，等待重建索引。",
+    error: supportedExtensions.has(ext) ? "已上传，等待重建索引。" : `Unsupported file type: ${ext}`,
     createdAt: previous?.createdAt || now,
     updatedAt: now
   } as Material;
@@ -1007,13 +1531,13 @@ export function registerMaterialFile(store: Store, filePath: string, mimeType?: 
 }
 
 export function markMaterialIndexFailed(store: Store, filePath: string, error: string, mimeType?: string) {
-  const index = getIndex(store);
+  ensureSqliteSeeded();
   const resolved = assertWithinWorkspace(filePath);
   const stat = fs.statSync(resolved);
   const id = hashId(resolved.toLowerCase());
   const title = decodeUploadName(path.basename(resolved));
   const previous = store.data.materials.find((material) => material.id === id);
-  const previousIndexed = index.materials.find((material) => material.id === id);
+  const previousIndexed = readMaterialFromSqlite(id);
   const now = nowIso();
   const material: RagIndexedMaterial = {
     id,
@@ -1032,10 +1556,9 @@ export function markMaterialIndexFailed(store: Store, filePath: string, error: s
     updatedAt: now
   };
   store.data.ragChunks = [];
-  removeIndexedMaterial(index, id);
-  index.materials.push(material);
+  const affectedFingerprints = readQuestionsForMaterial(id).map((question) => question.fingerprint || questionFingerprint(question.text));
   store.upsertMaterial(toPublicMaterial(material));
-  saveIndex(index);
+  saveSingleMaterialIndex(material, [], [], [], affectedFingerprints);
   return toPublicMaterial(material);
 }
 
@@ -1096,11 +1619,13 @@ function splitQuestionAnswer(block: string) {
 
 function questionMarkers(text: string) {
   const pattern =
-    /(?:^|\n)\s*(?:[【[(（]?\s*)((?:诊断自测)|(?:典例\s*\d+(?:[-－]\d+)?)|(?:例题?\s*\d+(?:[-－]\d+)?)|(?:变式\s*\d+(?:[-－]\d+)?)|(?:即学即练\s*\d+)|(?:练习\s*\d+(?:[-－]\d+)?)|(?:作业\s*\d+(?:[-－]\d+)?)|(?:第\s*[一二三四五六七八九十百\d]+\s*题)|(?:\d{1,3}[.．]\s*))(?:\s*[】\])）])?/g;
-  return [...text.matchAll(pattern)].map((match) => ({
-    label: match[1].trim().replace(/\s+/g, ""),
-    start: match.index || 0
-  }));
+    /(?:^|\n)\s*(?:[【[(（]?\s*)((?:诊断自测)|(?:典例\s*\d+(?:[-－]\d+)?)|(?:例题?\s*\d+(?:[-－]\d+)?)|(?:变式\s*\d+(?:[-－]\d+)?)|(?:即学即练\s*\d+)|(?:练习\s*\d+(?:[-－]\d+)?)|(?:作业\s*\d+(?:[-－]\d+)?)|(?:第\s*[一二三四五六七八九十百\d]+\s*题)|(?:\d{1,3}[.．、]\s*)|(?:\d{1,2}(?=\s+(?:\(?20\d{2}|设|已知|若|下列|函数|不等式|在|如图|求|证明))))(?:\s*[】\])）])?/g;
+  return [...text.matchAll(pattern)]
+    .map((match) => ({
+      label: match[1].trim().replace(/\s+/g, ""),
+      start: match.index || 0
+    }))
+    .filter((marker, index, markers) => index === 0 || marker.start - markers[index - 1].start > 20);
 }
 
 function countMatches(text: string, pattern: RegExp) {
@@ -1139,6 +1664,84 @@ function questionPriority(question: Pick<RagQuestionRecord, "title" | "path" | "
   const sourceScore = question.sourceKind === "exam" ? 10 : question.sourceKind === "mock" ? 6 : 0;
   const qualityPenalty = question.formulaCount * 12 + question.imageCount * 2;
   return answerScore + versionScore + sourceScore - qualityPenalty;
+}
+
+function embeddingTextForQuestion(question: RagQuestionRecord) {
+  return trimEmbeddingText(
+    [
+      question.title,
+      question.context,
+      question.questionType,
+      question.difficulty,
+      question.teachingRoles.join(" "),
+      question.knowledgeTags.join(" "),
+      question.text,
+      question.solution
+    ].join("\n")
+  );
+}
+
+function embeddingTextForSnippet(snippet: RagSnippetRecord) {
+  return trimEmbeddingText([snippet.title, snippet.context, snippet.tags.join(" "), snippet.text].join("\n"));
+}
+
+async function buildEmbeddingRecords(records: Array<RagQuestionRecord | RagSnippetRecord>) {
+  if (!isEmbeddingEnabled() || records.length === 0) return [];
+  const embeddings: RagEmbeddingRecord[] = [];
+  const batchSize = Math.max(1, Math.min(32, Math.floor(config.ragEmbeddingBatchSize || 8)));
+  for (let start = 0; start < records.length; start += batchSize) {
+    const batch = records.slice(start, start + batchSize);
+    const texts = batch.map((record) => ("questionNumber" in record ? embeddingTextForQuestion(record) : embeddingTextForSnippet(record)));
+    const vectors = await embedTexts(texts);
+    vectors.forEach((vector, index) => {
+      const record = batch[index];
+      embeddings.push({
+        id: record.id,
+        materialId: record.materialId,
+        vector,
+        model: config.ragEmbeddingModel,
+        dimensions: vector.length,
+        updatedAt: nowIso()
+      });
+    });
+  }
+  return embeddings;
+}
+
+export async function ensureMaterialEmbeddings(
+  store: Store,
+  materialId: string,
+  onProgress?: (progress: { total: number; processed: number; current: string }) => void
+) {
+  if (!isEmbeddingEnabled()) throw new Error("RAG embedding is not enabled. Set RAG_EMBEDDING_PROVIDER=ark and RAG_EMBEDDING_API_KEY.");
+  const index = getIndex(store);
+  const material = index.materials.find((item) => item.id === materialId);
+  if (!material) throw new Error("Material not found in RAG index.");
+  const questions = index.questions.filter((question) => question.materialId === materialId);
+  const snippets = index.snippets.filter((snippet) => snippet.materialId === materialId);
+  const records = [...questions, ...snippets];
+  const existing = readEmbeddingsByIds(records.map((record) => record.id));
+  const missing = records
+    .filter((record) => existing.get(record.id)?.model !== config.ragEmbeddingModel)
+    .slice(0, Math.max(1, Math.floor(config.ragEmbeddingMaxRecords)));
+  let processed = 0;
+  const batchSize = Math.max(1, Math.min(32, Math.floor(config.ragEmbeddingBatchSize || 1)));
+  for (let start = 0; start < missing.length; start += batchSize) {
+    const batch = missing.slice(start, start + batchSize);
+    onProgress?.({ total: missing.length, processed, current: batch[0]?.id || material.path });
+    const embeddings = await buildEmbeddingRecords(batch);
+    writeEmbeddingRecordsToSqlite(embeddings);
+    processed += batch.length;
+    onProgress?.({ total: missing.length, processed, current: batch.at(-1)?.id || material.path });
+  }
+  clearRagIndexCache();
+  return {
+    material: toPublicMaterial(material),
+    total: records.length,
+    existing: records.length - missing.length,
+    created: missing.length,
+    embeddings: countEmbeddingsForMaterial(materialId)
+  };
 }
 
 function rebuildDuplicateClusters(index: RagIndexDb): RagIndexDb {
@@ -1197,8 +1800,9 @@ function buildQuestionRecords(material: RagIndexedMaterial, text: string) {
       : [];
   const candidates = blocks.filter((item) => item.block.length >= 40 && isLikelyQuestionBlock(item.label, item.block));
 
-  return candidates.map((item, index): RagQuestionRecord => {
+  return candidates.flatMap((item, index): RagQuestionRecord[] => {
     const split = splitQuestionAnswer(item.block);
+    if (isFormulaPlaceholderHeavy(`${split.prompt}\n${split.solution}`)) return [];
     const formulaCount = countMatches(item.block, /\[公式\]/g);
     const imageCount = countMatches(item.block, /\[图片\]/g);
     const qualityWarnings = qualityWarningsForQuestion(split.prompt, formulaCount, imageCount);
@@ -1226,7 +1830,7 @@ function buildQuestionRecords(material: RagIndexedMaterial, text: string) {
     const tokenText = `${context}\n${split.prompt}\n${split.solution}\n${tags.join(" ")}`;
     const fingerprint = questionFingerprint(split.prompt);
     const answerQuality = answerQualityForQuestion({ answer: split.answer, solution: split.solution, hasAnswer: Boolean(split.solution) });
-    return {
+    return [{
       id: `${material.id}_q${index}`,
       materialId: material.id,
       path: material.path,
@@ -1254,13 +1858,14 @@ function buildQuestionRecords(material: RagIndexedMaterial, text: string) {
       duplicateClusterId: fingerprint,
       isClusterRepresentative: true,
       answerQuality
-    };
+    }];
   });
 }
 
 function buildSnippetRecords(material: RagIndexedMaterial, text: string) {
   const materialTags = extractTags(material.title, material.path, text.slice(0, 6000));
-  return chunkText(text).map((chunk, index): RagSnippetRecord => {
+  return chunkText(text).flatMap((chunk, index): RagSnippetRecord[] => {
+    if (isFormulaPlaceholderHeavy(chunk)) return [];
     const tags = extractTags(material.title, material.path, chunk);
     const formulaCount = countMatches(chunk, /\[公式\]/g);
     const imageCount = countMatches(chunk, /\[图片\]/g);
@@ -1273,7 +1878,7 @@ function buildSnippetRecords(material: RagIndexedMaterial, text: string) {
     ]
       .filter(Boolean)
       .join("；");
-    return {
+    return [{
       id: `${material.id}_s${index}`,
       materialId: material.id,
       path: material.path,
@@ -1286,12 +1891,12 @@ function buildSnippetRecords(material: RagIndexedMaterial, text: string) {
       tokens: unique([...tokenize(context), ...tokenize(chunk), ...tokenize(material.title), ...tokenize(material.path)]),
       formulaCount,
       imageCount
-    };
+    }];
   });
 }
 
 export async function indexMaterialFile(store: Store, filePath: string, mimeType?: string) {
-  const index = getIndex(store);
+  ensureSqliteSeeded();
   let resolved = assertWithinWorkspace(filePath);
   const decodedName = sanitizeFilename(decodeUploadName(path.basename(resolved)), path.basename(resolved));
   if (decodedName !== path.basename(resolved)) {
@@ -1306,7 +1911,7 @@ export async function indexMaterialFile(store: Store, filePath: string, mimeType
   const title = decodeUploadName(path.basename(resolved));
   const now = nowIso();
   const previous = store.data.materials.find((material) => material.id === id);
-  const previousIndexed = index.materials.find((material) => material.id === id);
+  const previousIndexed = readMaterialFromSqlite(id);
   const ext = path.extname(resolved).toLowerCase();
 
   let material: RagIndexedMaterial = {
@@ -1325,27 +1930,23 @@ export async function indexMaterialFile(store: Store, filePath: string, mimeType
     updatedAt: now
   };
 
-  function persistMaterial(nextMaterial: RagIndexedMaterial, questions: RagQuestionRecord[] = [], snippets: RagSnippetRecord[] = []) {
+  function persistMaterial(
+    nextMaterial: RagIndexedMaterial,
+    questions: RagQuestionRecord[] = [],
+    snippets: RagSnippetRecord[] = [],
+    embeddings: RagEmbeddingRecord[] = []
+  ) {
     store.data.ragChunks = [];
-    removeIndexedMaterial(index, id);
-    index.materials.push(nextMaterial);
-    index.questions.push(...questions);
-    index.snippets.push(...snippets);
+    const affectedFingerprints = unique([
+      ...readQuestionsForMaterial(id).map((question) => question.fingerprint || questionFingerprint(question.text)),
+      ...questions.map((question) => question.fingerprint || questionFingerprint(question.text))
+    ]);
     store.upsertMaterial(toPublicMaterial(nextMaterial));
-    saveIndex(index);
+    saveSingleMaterialIndex(nextMaterial, questions, snippets, embeddings, affectedFingerprints);
     return toPublicMaterial(nextMaterial);
   }
 
   try {
-    if (conversionExtensions.has(ext)) {
-      material = {
-        ...material,
-        status: "needs_conversion",
-        error: "旧版 .doc 暂不解析正文，请转换为 .docx 后重建索引。"
-      };
-      return persistMaterial(material);
-    }
-
     if (!supportedExtensions.has(ext)) {
       material = { ...material, status: "unsupported", error: `Unsupported file type: ${ext}` };
       return persistMaterial(material);
@@ -1382,7 +1983,13 @@ export async function indexMaterialFile(store: Store, filePath: string, mimeType
         tags: materialTags,
         error: `文件超过 ${Math.round(config.ragMaxParseBytes / 1024 / 1024)}MB，仅索引文件名和路径，未解析正文。`
       };
-      return persistMaterial(material, [], [snippet]);
+      let embeddings: RagEmbeddingRecord[] = [];
+      try {
+        embeddings = await buildEmbeddingRecords([snippet]);
+      } catch (error) {
+        material.error = `${material.error} 向量化失败：${error instanceof Error ? error.message : String(error)}`;
+      }
+      return persistMaterial(material, [], [snippet], embeddings);
     }
 
     const extracted = await extractText(resolved);
@@ -1398,12 +2005,19 @@ export async function indexMaterialFile(store: Store, filePath: string, mimeType
       snippetCount: snippets.length,
       chunkCount: questions.length + snippets.length
     };
-    return persistMaterial(material, questions, snippets);
+    let embeddings: RagEmbeddingRecord[] = [];
+    try {
+      embeddings = await buildEmbeddingRecords([...questions, ...snippets]);
+    } catch (error) {
+      material.error = `正文已索引，向量化失败：${error instanceof Error ? error.message : String(error)}`;
+    }
+    return persistMaterial(material, questions, snippets, embeddings);
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     material = {
       ...material,
-      status: "failed",
-      error: error instanceof Error ? error.message : String(error),
+      status: ext === ".doc" && /旧版 \.doc/.test(message) ? "needs_conversion" : "failed",
+      error: message,
       chunkCount: 0,
       questionCount: 0,
       snippetCount: 0
@@ -1559,6 +2173,180 @@ function collectFtsCandidateIds(query: string, limit: number) {
   }
 }
 
+function collectTokenCandidateIds(queryTokens: string[], queryTags: string[], limit: number) {
+  if (queryTokens.length === 0 && queryTags.length === 0) return new Set<string>();
+  const maxCandidates = Math.max(300, limit * 80);
+  const scored: Array<{ id: string; score: number }> = [];
+  const rows = getSqliteDb().prepare("SELECT id, tags, body, title, context FROM rag_fts").iterate() as Iterable<{
+    id: string;
+    tags: string;
+    body: string;
+    title: string;
+    context: string;
+  }>;
+
+  for (const row of rows) {
+    const text = `${row.title} ${row.context} ${row.tags} ${row.body}`.toLowerCase();
+    let score = 0;
+    for (const token of queryTokens) {
+      if (text.includes(token.toLowerCase())) score += 1;
+    }
+    for (const tag of queryTags) {
+      if (row.tags.includes(tag) || text.includes(tag)) score += 4;
+    }
+    if (score <= 0) continue;
+    scored.push({ id: row.id, score });
+    scored.sort((a, b) => b.score - a.score);
+    if (scored.length > maxCandidates) scored.pop();
+  }
+
+  return new Set(scored.map((item) => item.id));
+}
+
+function collectSemanticCandidateIds(queryEmbedding: number[] | undefined, limit: number) {
+  if (!queryEmbedding) return { ids: new Set<string>(), embeddings: new Map<string, RagEmbeddingRecord>() };
+  const maxCandidates = Math.max(120, limit * 60);
+  const scored: Array<{ embedding: RagEmbeddingRecord; similarity: number }> = [];
+  const queryVector = Float32Array.from(queryEmbedding);
+  const rows = getSqliteDb()
+    .prepare("SELECT id, materialId, model, dimensions, vector, updatedAt FROM embeddings WHERE model = ?")
+    .iterate(config.ragEmbeddingModel) as Iterable<{
+    id: string;
+    materialId: string;
+    model: string;
+    dimensions: number;
+    vector: Buffer | Uint8Array;
+    updatedAt: string;
+  }>;
+
+  for (const row of rows) {
+    const vector = bufferToFloat32Array(row.vector);
+    const similarity = cosineSimilarity(queryVector, vector);
+    if (similarity <= 0) continue;
+    const embedding: RagEmbeddingRecord = {
+      id: row.id,
+      materialId: row.materialId,
+      model: row.model,
+      dimensions: row.dimensions,
+      vector: [...vector],
+      updatedAt: row.updatedAt
+    };
+    scored.push({ embedding, similarity });
+    scored.sort((a, b) => b.similarity - a.similarity);
+    if (scored.length > maxCandidates) scored.pop();
+  }
+
+  return {
+    ids: new Set(scored.map((item) => item.embedding.id)),
+    embeddings: new Map(scored.map((item) => [item.embedding.id, item.embedding]))
+  };
+}
+
+function readSearchUnitsByIds(ids: string[]) {
+  const uniqueIds = unique(ids.filter(Boolean));
+  if (uniqueIds.length === 0) return [] as SearchUnit[];
+  const db = getSqliteDb();
+  const questions: RagQuestionRecord[] = [];
+  const snippets: RagSnippetRecord[] = [];
+  const batchSize = 200;
+
+  for (let start = 0; start < uniqueIds.length; start += batchSize) {
+    const batch = uniqueIds.slice(start, start + batchSize);
+    const placeholders = batch.map(() => "?").join(",");
+    const questionRows = db.prepare(`SELECT payload FROM questions WHERE id IN (${placeholders})`).all(...batch) as Array<{ payload: string }>;
+    const snippetRows = db.prepare(`SELECT payload FROM snippets WHERE id IN (${placeholders})`).all(...batch) as Array<{ payload: string }>;
+    questions.push(...questionRows.map((row) => jsonParse<RagQuestionRecord>(row.payload)));
+    snippets.push(...snippetRows.map((row) => jsonParse<RagSnippetRecord>(row.payload)));
+  }
+
+  const materialById = readMaterialsByIds([...questions.map((question) => question.materialId), ...snippets.map((snippet) => snippet.materialId)]);
+  const units: SearchUnit[] = [];
+  for (const question of questions) {
+    const material = materialById.get(question.materialId);
+    if (!material || material.status !== "indexed") continue;
+    units.push({
+      type: "question",
+      material,
+      question,
+      id: question.id,
+      text: `${question.context}\n${question.text}\n${question.solution}`,
+      context: question.context,
+      title: question.title,
+      path: question.path,
+      tags: question.tags,
+      tokens: question.tokens,
+      hasAnswer: question.hasAnswer,
+      teachingRoles: question.teachingRoles,
+      sourceKind: question.sourceKind,
+      duplicateClusterId: question.duplicateClusterId,
+      isClusterRepresentative: question.isClusterRepresentative,
+      answerQuality: question.answerQuality
+    });
+  }
+  for (const snippet of snippets) {
+    const material = materialById.get(snippet.materialId);
+    if (!material || material.status !== "indexed") continue;
+    units.push({
+      type: "snippet",
+      material,
+      snippet,
+      id: snippet.id,
+      text: `${snippet.context}\n${snippet.text}`,
+      context: snippet.context,
+      title: snippet.title,
+      path: snippet.path,
+      tags: snippet.tags,
+      tokens: snippet.tokens,
+      hasAnswer: snippet.kind === "answer",
+      teachingRoles: snippet.kind === "knowledge" ? ["知识参考"] : ["资料片段"],
+      sourceKind: detectSourceKind(snippet.title, snippet.path, snippet.text),
+      isClusterRepresentative: true,
+      answerQuality: snippet.kind === "answer" ? "solution_steps" : "none"
+    });
+  }
+  return units;
+}
+
+function collectSemanticCandidateUnits(cache: SearchCache, queryEmbedding: number[] | undefined, limit: number) {
+  if (!queryEmbedding) return { units: [] as SearchUnit[], embeddings: new Map<string, RagEmbeddingRecord>() };
+  const unitById = new Map(cache.units.map((unit) => [unit.id, unit]));
+  const maxCandidates = Math.max(120, limit * 60);
+  const scored: Array<{ embedding: RagEmbeddingRecord; unit: SearchUnit; similarity: number }> = [];
+  const rows = getSqliteDb()
+    .prepare("SELECT id, materialId, model, dimensions, vector, updatedAt FROM embeddings WHERE model = ?")
+    .iterate(config.ragEmbeddingModel) as Iterable<{
+    id: string;
+    materialId: string;
+    model: string;
+    dimensions: number;
+    vector: Buffer | Uint8Array;
+    updatedAt: string;
+  }>;
+
+  for (const row of rows) {
+    const unit = unitById.get(row.id);
+    if (!unit) continue;
+    const embedding: RagEmbeddingRecord = {
+      id: row.id,
+      materialId: row.materialId,
+      model: row.model,
+      dimensions: row.dimensions,
+      vector: bufferToVector(row.vector),
+      updatedAt: row.updatedAt
+    };
+    const similarity = cosineSimilarity(queryEmbedding, embedding.vector);
+    if (similarity <= 0) continue;
+    scored.push({ embedding, unit, similarity });
+    scored.sort((a, b) => b.similarity - a.similarity);
+    if (scored.length > maxCandidates) scored.pop();
+  }
+
+  return {
+    units: scored.map((item) => item.unit),
+    embeddings: new Map(scored.map((item) => [item.embedding.id, item.embedding]))
+  };
+}
+
 function dedupeSearchResults(results: RagSearchResult[], limit: number) {
   const byCluster = new Map<string, RagSearchResult>();
   const passthrough: RagSearchResult[] = [];
@@ -1574,18 +2362,21 @@ function dedupeSearchResults(results: RagSearchResult[], limit: number) {
   return [...byCluster.values(), ...passthrough].sort((a, b) => b.score - a.score).slice(0, limit);
 }
 
-export function searchRag(store: Store, query: string, limit = 8): RagSearchResult[] {
-  const index = getIndex(store);
-  const cache = getSearchCache(index);
+export async function searchRag(store: Store, query: string, limit = 8): Promise<RagSearchResult[]> {
+  ensureSqliteSeeded();
   const queryTokens = tokenize(query);
   const queryTags = extractTags(query);
-  if ((queryTokens.length === 0 && queryTags.length === 0) || cache.units.length === 0) return [];
+  if (queryTokens.length === 0 && queryTags.length === 0) return [];
 
+  let queryEmbedding: number[] | undefined;
+  queryEmbedding = await embedQueryText(query);
   const ftsIds = collectFtsCandidateIds(query, limit);
-  const tokenUnits = collectCandidateUnits(cache, queryTokens, queryTags, limit);
-  const ftsUnits = ftsIds.size > 0 ? cache.units.filter((unit) => ftsIds.has(unit.id)) : [];
-  const units = unique([...ftsUnits, ...tokenUnits]);
+  const semantic = collectSemanticCandidateIds(queryEmbedding, limit);
+  const units = readSearchUnitsByIds([...ftsIds, ...semantic.ids]);
   if (units.length === 0) return [];
+  const embeddings = queryEmbedding
+    ? new Map([...readEmbeddingsByIds(units.map((unit) => unit.id)), ...semantic.embeddings])
+    : new Map<string, RagEmbeddingRecord>();
   const idf = buildIdf(units, queryTokens);
   const queryNorm = vectorNorm(queryTokens, idf);
   const normalizedQuery = normalizeText(query);
@@ -1603,7 +2394,9 @@ export function searchRag(store: Store, query: string, limit = 8): RagSearchResu
       queryTags,
       queryTerms,
       idf,
-      queryNorm
+      queryNorm,
+      queryEmbedding,
+      embeddings
     });
     if (scored.score <= 0) continue;
     const chunk = unitToChunk(unit);
@@ -1638,6 +2431,8 @@ interface UnitScoreInput {
   queryTerms: string[];
   idf: Map<string, number>;
   queryNorm: number;
+  queryEmbedding?: number[];
+  embeddings?: Map<string, RagEmbeddingRecord>;
 }
 
 function scoreUnit(unit: SearchUnit, input: UnitScoreInput) {
@@ -1669,6 +2464,12 @@ function scoreUnit(unit: SearchUnit, input: UnitScoreInput) {
   const wantsQuestion = /题|例|练|变式|作业|真题|压轴/.test(input.query);
   const wantsAnswer = /答案|解析|详解|核对/.test(input.query);
   const wantsExam = /真题|高考|中考|模拟|一模|二模/.test(input.query);
+  const embedding = input.embeddings?.get(unit.id);
+  const vectorSimilarity = input.queryEmbedding && embedding ? Math.max(0, cosineSimilarity(input.queryEmbedding, embedding.vector)) : 0;
+  const boost = materialBoost(unit.material);
+  const vectorWeight = Math.max(0, config.ragVectorWeight);
+  const keywordWeight = Math.max(0, config.ragKeywordWeight);
+  const hybridScale = vectorWeight > 0 && keywordWeight > 0 ? keywordWeight / Math.max(1, vectorWeight + keywordWeight) : 1;
 
   const role =
     (unit.type === "question" && wantsQuestion ? 16 : 0) +
@@ -1688,9 +2489,14 @@ function scoreUnit(unit: SearchUnit, input: UnitScoreInput) {
     tags: matchedTags.length * 12,
     role,
     phrase: phraseHit ? 20 : 0,
-    answer: (unit.hasAnswer && wantsAnswer ? 12 : 0) + answerQualityScore + representativeScore + versionScore
+    answer: (unit.hasAnswer && wantsAnswer ? 12 : 0) + answerQualityScore + representativeScore + versionScore,
+    vector: vectorSimilarity * vectorWeight,
+    boost
   };
-  const score = Object.values(scoreParts).reduce((sum, value) => sum + value, 0);
+  const keywordScore = Object.entries(scoreParts)
+    .filter(([key]) => key !== "vector" && key !== "boost")
+    .reduce((sum, [, value]) => sum + value, 0);
+  const score = keywordScore * hybridScale + scoreParts.vector + scoreParts.boost;
   return {
     score: Math.round(score * 100) / 100,
     scoreParts: roundScoreParts(scoreParts),
@@ -1729,6 +2535,8 @@ function buildReason(unit: SearchUnit, matchedTags: string[], parts: RagScorePar
   if (parts.title > 0) reasons.push("标题命中课程关键词");
   if (parts.path > 0) reasons.push("路径命中课程关键词");
   if (parts.role > 0) reasons.push("教学角色适合本课");
+  if (parts.vector > 0) reasons.push("语义向量相近");
+  if (parts.boost > 0) reasons.push("重点资料加权");
   if (parts.lexical > 0 || parts.coverage > 0) reasons.push("正文包含相关概念");
   return reasons.length > 0 ? reasons.join("；") : `候选资料：${unit.title}`;
 }
@@ -1776,8 +2584,7 @@ function buildCourseQuery(course: Course) {
     course.textbook,
     course.lessonKind,
     course.desiredContent,
-    course.localFiles,
-    course.notes
+    course.localFiles
   ]
     .filter(Boolean)
     .join(" ");
@@ -1838,9 +2645,9 @@ function buildCandidatePool(results: RagSearchResult[]) {
   };
 }
 
-export function buildRagPlan(store: Store, course: Course, limit = 8): RagPlan {
+export async function buildRagPlan(store: Store, course: Course, limit = 8): Promise<RagPlan> {
   const queries = buildExpandedQueries(course);
-  const results = mergeSearchResults(queries.map((query) => searchRag(store, query, limit + 12)), limit + 10);
+  const results = mergeSearchResults(await Promise.all(queries.map((query) => searchRag(store, query, limit + 12))), limit + 10);
   const query = buildCourseQuery(course);
   return {
     query,
@@ -1915,7 +2722,7 @@ export function listMaterialCandidates(root = path.join(config.workspaceRoot, "�
         continue;
       }
       const ext = path.extname(entry.name).toLowerCase();
-      if (supportedExtensions.has(ext) || conversionExtensions.has(ext)) candidates.push(fullPath);
+      if (supportedExtensions.has(ext)) candidates.push(fullPath);
     }
   }
 

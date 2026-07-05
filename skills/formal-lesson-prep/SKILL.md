@@ -17,7 +17,7 @@ Large lesson-prep tasks must use sub-agent division of labor before final delive
 
 1. `题目提取`: extract questions from user-provided local files, library candidates, screenshots, and web exam sources; build an internal question index and identify missing figures or unclear text.
 2. `答案核对`: independently solve and verify every selected question, checking conditions, calculations, diagrams, and answer forms.
-3. `课件生成`: build the Beamer classroom PDF from the verified question sequence, keeping it student-facing and aligned with the teacher script.
+3. `课件生成`: build the A4 portrait classroom handout PDF from the verified question sequence, keeping it student-facing and aligned with the teacher script.
 4. `逐字稿和内容丰富`: expand the lesson content and teacher script after the verified question sequence is set; add enough diagnostic, model, variant, consolidation, and homework questions; write page-by-page teaching language, follow-up prompts, likely student responses, correction wording, and board notes.
 
 The main agent owns task decomposition, integration, conflict resolution, and the final quality gate. Do not skip `答案核对`, question-volume expansion, or teacher-script enrichment on substantial courses.
@@ -39,7 +39,7 @@ Do not require these working files to be uploaded or emphasized in the final use
 Run lesson preparation in two internal stages:
 
 1. Stage 1: complete question extraction, `_work/题目索引.md`, `_work/候选题池.md`, `_work/答案核对表.md`, and the course skeleton before drafting final materials.
-2. Stage 2: generate the Beamer classroom PDF, write the teacher script, enrich the content, complete the final four deliverables, and run the quality gate.
+2. Stage 2: generate the A4 portrait classroom handout PDF, write the teacher script, enrich the content, complete the final four deliverables, and run the quality gate.
 
 Do not enter Stage 2 until the selected question sequence has been checked for answer correctness, topic fit, and enough question volume for the requested class length.
 
@@ -141,7 +141,7 @@ Keep at least one third of class time for student thinking, writing, or explaini
 
 ### 6. Build The Tablet-Annotation PDF
 
-Create a clean LaTeX Beamer PDF for live annotation. Use formulas, text, TikZ, and programmatic plots precisely. Keep problem pages spacious and separate prompts from reveal pages. Do not add decorative illustrations.
+Create a clean A4 portrait LaTeX classroom handout PDF for live annotation. Use formulas, text, TikZ, and programmatic plots precisely. Keep problem pages spacious with large writing areas. The classroom PDF should show only student-facing questions and necessary diagrams, not answer reveals, method skeletons, or hint pages. Do not add decorative illustrations.
 
 Use image generation only when a problem genuinely requires a complex situational or hard-to-redraw visual. Follow the image boundary and PDF QA rules in [references/math-lesson-core.md](references/math-lesson-core.md).
 
@@ -216,7 +216,7 @@ Before finishing:
 - Confirm `老师逐字稿.md` and `知识点详解.md` contain no skipped reasoning steps, no unexplained formulas or theorem jumps, and no unapproved out-of-scope knowledge.
 - Confirm every selected question's final answer and key reasoning have been independently checked; flag unresolved or possibly wrong answers before finalization.
 - Compile the classroom PDF with XeLaTeX and confirm it opens.
-- Render representative PDF pages and inspect readability, answer reveal order, and writable space.
+- Render representative PDF pages and inspect readability, absence of answer/method leakage, diagram accuracy, and writable space.
 - Confirm every displayed diagram is mathematically accurate.
 - Do not fabricate sources, scores, student reactions, or authentic-exam status.
 

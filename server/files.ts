@@ -57,7 +57,7 @@ export function listCourseFiles(outputDir: string) {
       if (file.name === "老师逐字稿.md") return 1;
       if (file.name === "知识点详解.md") return 2;
       if (file.name === "课后反馈.md") return 3;
-      if (file.name === "课堂课件.pdf") return 4;
+      if (file.kind === "pdf") return 4;
       return 10;
     };
     return rank(a) - rank(b) || a.relativePath.localeCompare(b.relativePath, "zh-CN");

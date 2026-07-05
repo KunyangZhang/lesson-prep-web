@@ -1,67 +1,122 @@
-\documentclass[aspectratio=169]{ctexbeamer}
+\documentclass[12pt,a4paper]{ctexart}
 
+\usepackage[margin=1.65cm,top=1.45cm,bottom=1.45cm]{geometry}
 \usepackage{amsmath,amssymb}
+\usepackage{tikz}
+\usepackage{enumitem}
 
-\usetheme{default}
-\setbeamertemplate{navigation symbols}{}
-\setbeamertemplate{footline}{
-  \hfill
-  \usebeamerfont{page number in head/foot}
-  \usebeamercolor[fg]{page number in head/foot}
-  \insertframenumber/\inserttotalframenumber
-  \hspace*{1em}\vskip0.8em
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.35em}
+\setlist[enumerate]{leftmargin=1.8em,itemsep=0.45em,topsep=0.2em}
+\setlist[itemize]{leftmargin=1.6em,itemsep=0.25em,topsep=0.2em}
+
+\newcommand{\lessonTitle}[2]{
+  \begin{center}
+    {\LARGE\bfseries #1}
+  \end{center}
+  \vspace{0.2em}
+  \hrule
+  \vspace{0.8em}
 }
 
-\definecolor{LessonInk}{RGB}{24,35,52}
-\definecolor{LessonAccent}{RGB}{38,91,143}
-\definecolor{LessonMuted}{RGB}{102,115,130}
+\newcommand{\questionBox}[2]{
+  \textbf{\large #1}
 
-\setbeamercolor{normal text}{fg=LessonInk,bg=white}
-\setbeamercolor{frametitle}{fg=LessonInk,bg=white}
-\setbeamercolor{structure}{fg=LessonAccent}
-\setbeamercolor{page number in head/foot}{fg=LessonMuted}
-\setbeamerfont{frametitle}{size=\Large,series=\bfseries}
-\setbeamerfont{normal text}{size=\large}
-\setbeamersize{text margin left=1cm,text margin right=1cm}
-
-% Leave a blank area for tablet handwriting.
-\newcommand{\writingspace}[1][0.48\textheight]{
-  \par\vspace{0.4em}
-  \begin{beamercolorbox}[wd=\textwidth,ht=#1,dp=0ex]{normal text}
-  \end{beamercolorbox}
+  \vspace{0.25em}
+  #2
+  \vspace{0.45em}
+  \hrule
 }
 
-\title{[课程主题]}
-\subtitle{[学生姓名] · [日期]}
-\author{[老师姓名]}
-\date{}
+% Leave a large blank area for tablet handwriting. The argument uses centimeters.
+\newcommand{\writingspace}[1][14.5]{
+  \vspace{0.75em}
+  \vspace*{#1cm}
+}
+
+\newcommand{\knowledgeBlock}[2]{
+  \textbf{\large #1}
+
+  \vspace{0.35em}
+  #2
+  \vspace{0.55em}
+  \hrule
+}
+
+\newcommand{\templateSummary}[2]{
+  \textbf{\large #1}
+
+  \vspace{0.35em}
+  #2
+  \vspace{0.55em}
+  \hrule
+}
 
 \begin{document}
 
-\begin{frame}
-  \titlepage
-\end{frame}
+\lessonTitle{[课程主题]课堂讲义}{}
 
-% Replace the sample frames below with the actual lesson.
-\begin{frame}{[题目标题]}
-  [题目正文]
+\knowledgeBlock{知识点梳理一：基本对象与概念边界}{
+  [这里写教辅书式的完整基础知识体系，不留书写空白。知识点必须是抽象、通用的基础内容，不得引用后面题目的题号、具体函数式、具体数据或解题过程。先写清本专题的基本对象，再进入性质和题目。]
 
-  \textbf{请在下方写出你的思路：}
-  \writingspace
-\end{frame}
-
-\begin{frame}{[题目标题]：关键提示}
-  [只展示一条必要提示，不提前暴露完整答案。]
-
-  \writingspace[0.36\textheight]
-\end{frame}
-
-\begin{frame}{[题目标题]：方法回顾}
   \begin{enumerate}
-    \item [识别信号]
-    \item [关键步骤]
-    \item [检查方式]
+    \item \textbf{基本对象：}[写清本模块研究的对象、符号、变量含义、单位或取值集合。函数专题必须写定义域、值域、对应法则、相同函数判定。]
+    \item \textbf{定义与条件：}[每个定义都要同时写“是什么”和“成立前提”，例如可导、连续、区间、端点、参数范围、几何位置关系等。]
+    \item \textbf{表示方式：}[写清解析式、图像、表格、文字、几何图形之间如何互相表达；能画图说明的知识点必须画示意图。]
+    \item \textbf{基础性质：}[写清公式、定理、代数性质、几何性质、图像性质、判定依据和适用前提。]
+    \item \textbf{易错边界：}[写清定义域遗漏、端点遗漏、等号遗漏、参数范围变化、分类讨论不全、图像不连续等通用错误。]
   \end{enumerate}
-\end{frame}
+}
+
+\newpage
+\lessonTitle{[课程主题]课堂讲义}{}
+
+\knowledgeBlock{知识点梳理二：图像、判定与常见结论}{
+  [继续展开本专题所有基础知识。不要只写后面题目会用到的点；一个核心知识对象至少写清“是什么、什么时候能用、怎么表示或画图、能推出什么、怎么判定、哪里容易错”。一页不够就继续新增知识点页。]
+
+  \begin{enumerate}
+    \item \textbf{图像语言：}[例如二次函数的开口方向、对称轴、顶点、与 $x$ 轴交点；函数零点与图像交点；单调区间、极值点、端点等。]
+    \item \textbf{判定方法：}[写清从题面识别本知识点的通用信号，以及每种判定方法需要满足的前提条件。]
+    \item \textbf{最值与极值：}[若本专题涉及最值，必须写清区间端点、内部极值、不可导点或边界临界点；极值的必要条件和充分条件都要写。]
+    \item \textbf{零点与交点：}[若涉及零点，必须画图说明与 $x$ 轴交点，并区分穿过、相切、无交点、含参临界状态。]
+    \item \textbf{常见题型信号：}[写一般题面中哪些信息会触发本知识点，不写具体题目的条件。]
+  \end{enumerate}
+}
+
+\newpage
+\lessonTitle{[课程主题]课堂讲义}{}
+
+\questionBox{第1题：[题目标题]}{
+  [题目正文。只放学生需要看到的题目、条件和必要图形，不放答案、提示、方法骨架或完整过程。]
+}
+
+\writingspace[15.0]
+
+\newpage
+\lessonTitle{[课程主题]课堂讲义}{}
+
+\questionBox{第2题：[含图题目标题]}{
+  [含图题目必须在题面附近用 TikZ 或其他 LaTeX 程序图画出图像、几何图、坐标系、统计图或表格。]
+}
+
+\begin{center}
+\begin{tikzpicture}[scale=0.95]
+  \draw[->,line width=0.65pt] (-0.2,0) -- (7.2,0) node[right] {$x$};
+  \draw[->,line width=0.65pt] (0,-2.0) -- (0,3.2) node[above] {$y$};
+  \draw[line width=0.95pt,domain=0.25:6.6,samples=120] plot (\x,{ln(\x)+1-0.55*\x});
+  \draw[gray!55,line width=0.55pt] (1,0.08) -- (1,-0.08) node[below=4pt] {$1$};
+  \node at (4.95,1.2) {$y=\ln x-kx+1$};
+\end{tikzpicture}
+\end{center}
+
+\writingspace[10.5]
+
+\newpage
+\lessonTitle{[课程主题]课堂讲义}{}
+
+\templateSummary{常用套路模板总结}{
+  [只总结本节课题型中确实高频、适用条件明确、可以迁移的解题套路。每条至少写清：适用题型/识别信号、使用条件、操作顺序、容易失效的情况。不要为了凑总结硬编口诀。]
+}
 
 \end{document}

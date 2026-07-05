@@ -130,7 +130,13 @@ GET /api/health
 - `CODEX_REMOTE_WORKSPACE`: Linux 服务器上的备课工作区路径。SSH 模式下，prompt 里的工作区和输出目录会映射到这个路径。
 - `CODEX_REMOTE_PROJECT_ROOT`: Linux 服务器上的 `lesson-prep-web` 项目路径。SSH 模式下如果项目目录不在 `CODEX_REMOTE_WORKSPACE` 里面，需要设置它，Codex 才能读到项目内置 skill。
 - `MAX_UPLOAD_FILES`: 单次上传最多文件数，默认 `5000`。上传大文件夹提示文件太多时调大这个值。
+- `MAX_UPLOAD_FILE_MB`: 单个上传文件大小上限，默认 `500` MB。上传大 PDF/压缩包提示文件过大时调大这个值；Nginx 部署时还要同步调大 `client_max_body_size`。
 - `RAG_MAX_REINDEX_FILES`: 重建索引时最多扫描文件数，默认 `300`。
+- `RAG_MAX_PARSE_BYTES`: 单个资料允许解析正文的大小上限，默认可设 `209715200`（200 MB）。超过后只索引文件名和路径。
+- `RAG_EMBEDDING_PROVIDER`: 设为 `ark` 时启用混合 RAG 向量检索；未设置 API key 时自动退回关键词/FTS 检索。
+- `RAG_EMBEDDING_ENDPOINT` / `RAG_EMBEDDING_API_KEY` / `RAG_EMBEDDING_MODEL`: Ark embedding 接口配置。不要把 API key 提交到代码仓库。
+- `RAG_VECTOR_WEIGHT` / `RAG_KEYWORD_WEIGHT`: 混合检索中向量语义分和关键词分的权重，默认建议 `70` / `30`。
+- `RAG_BOOST_PATTERNS`: 重点资料加权，格式如 `2025新高考:45,690页:20`，命中标题或路径时额外加分。
 - `SECURE_COOKIES`: HTTPS 部署后建议设为 `true`；如果只是用 HTTP 初测，先保持 `false`。
 - `ENABLE_HSTS`: 确认 HTTPS 正常后再设为 `true`。
 - `TRUST_PROXY`: 通过 Nginx 反向代理部署时建议设为 `true`，登录限流会使用真实客户端 IP。
