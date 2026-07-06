@@ -14,7 +14,13 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     }
   }
   if (!response.ok) {
-    throw new Error(data.error || `Request failed: ${response.status}`);
+    const error = new Error(data.error || `Request failed: ${response.status}`) as Error & {
+      status?: number;
+      data?: unknown;
+    };
+    error.status = response.status;
+    error.data = data;
+    throw error;
   }
   return data as T;
 }

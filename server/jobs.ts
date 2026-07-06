@@ -17,6 +17,13 @@ interface CodexJobOptions {
   refineInstruction?: string;
 }
 
+function isLightweightRefineInstruction(refineInstruction?: string) {
+  return (
+    refineInstruction?.startsWith("这是一次“继续生成”") ||
+    refineInstruction?.startsWith("这是系统根据质量检查自动发起的补救生成")
+  ) || false;
+}
+
 function quoteArg(value: string) {
   if (/^[\w.:\-/\\]+$/.test(value)) return value;
   return `"${value.replace(/"/g, '\\"')}"`;
@@ -116,11 +123,50 @@ ${issueLines}
 
 补救要求：
 1. 先阅读课程目录现有文件，保留可用内容。
-2. 必须补齐或修正 _work/题目索引.md、_work/候选题池.md、_work/答案核对表.md。
+2. 必须补齐或修正 _work/题目提取.md、_work/候选题池.md、_work/答案核对表.md、_work/课件生成计划.md、_work/逐字稿丰富清单.md。
 3. 若题量不足，按 ${course.type === "trial" ? "试听课" : "正式课"} 和 ${course.durationMinutes} 分钟课长补充诊断、例题、变式、巩固、作业或口头微变式。
 4. 若答案核对表缺项或有存疑题，逐题重算并写清最终答案、关键条件、关键步骤、易错点、核对结论。
 5. 若逐字稿存在跳步或内容薄，按课堂页码逐页补老师说、追问、学生可能回答、纠错话术、板书或批注。
-6. 最终产物仍是老师逐字稿.md、知识点详解.md、${pdfName}、课后反馈.md；最终产物不需要标注本地PDF来源，只有真题/模考题需要可靠来源。
+6. 若课堂 PDF 中有几何图、函数图、坐标系或统计图，必须检查并修正图像质量：图要足够大，点名不重叠，主线/辅助线层次清楚，立体图的平行、垂直、中点、截面、动点位置与题设一致；必要时拆成“原图 + 建系/向量图”两个图。
+7. 最终产物仍是老师逐字稿.md、知识点详解.md、${pdfName}、课后反馈.md；最终产物不需要标注本地PDF来源，只有真题/模考题需要可靠来源。
+`.trim();
+}
+
+function buildContinueInstruction(store: Store, course: Course, failedJob: Job, student?: Student) {
+  const pdfName = courseClassroomPdfFileName(course, student?.name);
+  const logTail = failedJob.logPath ? readSmallFile(failedJob.logPath, 60000) : "";
+  const lastMessage = failedJob.lastMessagePath ? readSmallFile(failedJob.lastMessagePath, 30000) : "";
+  const existingFiles = listCourseFiles(course.outputDir)
+    .map((file) => `- ${file.kind}: ${toRunnerPath(file.path)}`)
+    .join("\n");
+
+  return `
+这是一次“继续生成”，不是从零重做。上一次 Codex 备课任务中断、失败或遇到限流后，用户要求继续。
+
+继续目标：
+1. 先阅读课程目录现有文件，保留已经可用的内容，不要删除已完成产物。
+2. 读取上一次任务日志和 last message，确认已经完成到哪一步、已经读过哪些 PDF/题目、哪些文件已写出。
+3. 从中断点继续完成缺失内容，最终仍需保证四个核心产物完整可用：老师逐字稿.md、知识点详解.md、${pdfName}、课后反馈.md。
+4. 如果上次日志里已经识别了题目、答案核对、课堂主线或 PDF 页码，直接沿用并继续补全，不要重复大范围检索和重复读整份材料。
+5. 如果已有部分 _work 文件或最终文件，先补缺和修正，再继续生成；不要因为继续任务而降低质量门禁。
+6. 若上次失败原因是 429 Too Many Requests、网络中断、session 记录失败或进程退出，忽略该系统错误本身，继续完成备课内容。
+
+课程目录现有文件：
+${existingFiles || "[暂无]"}
+
+上一次任务状态：
+- jobId: ${failedJob.id}
+- status: ${failedJob.status}
+- exitCode: ${failedJob.exitCode ?? "[无]"}
+- error: ${failedJob.error || "[无]"}
+- startedAt: ${failedJob.startedAt || "[无]"}
+- endedAt: ${failedJob.endedAt || "[无]"}
+
+上一次 Codex 最终回复/last message：
+${lastMessage || "[无]"}
+
+上一次任务日志尾部：
+${logTail || "[无]"}
 `.trim();
 }
 
@@ -181,26 +227,29 @@ export async function buildCodexPrompt(store: Store, student: Student, course: C
   const skillMd = path.join(skillDir, "SKILL.md");
   const classroomPdfName = courseClassroomPdfFileName(course, student.name);
   const finalOutputNames = coreOutputFileNames(course, student.name).join("、");
-  const ragPlan = await buildRagPlan(store, course, 8);
-  const pool = ragPlan.candidatePool;
+  const skipFullRag = isLightweightRefineInstruction(options.refineInstruction);
+  const ragPlan = skipFullRag ? null : await buildRagPlan(store, course, 8);
+  const pool = ragPlan?.candidatePool;
   const ragContext =
-    ragPlan.selected.length === 0
+    !ragPlan
+      ? "这是补充/继续生成任务：跳过本轮自动 RAG 重检索，优先使用质量检查结果、上一次日志、课程目录现有文件、用户上传资料路径和已提取题目继续完成。必要时只做最小范围补查。"
+      : ragPlan.selected.length === 0
       ? "本地 RAG 暂无命中资料。仍需按 skill 要求搜索本地资料库和可靠网页来源。"
       : [
           `检索查询：${ragPlan.query || "[空]"}`,
           `意图标签：${ragPlan.intentTags.length > 0 ? ragPlan.intentTags.join("、") : "[未识别]"}`,
           "",
           "候选题池 - 可直接上课：",
-          ...(pool.direct.length > 0 ? pool.direct.map(formatRagResult) : ["[无]"]),
+          ...(pool && pool.direct.length > 0 ? pool.direct.map(formatRagResult) : ["[无]"]),
           "",
           "候选题池 - 可改编为变式/巩固：",
-          ...(pool.variants.length > 0 ? pool.variants.map(formatRagResult) : ["[无]"]),
+          ...(pool && pool.variants.length > 0 ? pool.variants.map(formatRagResult) : ["[无]"]),
           "",
           "候选题池 - 可做作业：",
-          ...(pool.homework.length > 0 ? pool.homework.map(formatRagResult) : ["[无]"]),
+          ...(pool && pool.homework.length > 0 ? pool.homework.map(formatRagResult) : ["[无]"]),
           "",
           "候选资料 - 知识点/解析参考：",
-          ...(pool.reference.length > 0 ? pool.reference.map(formatRagResult) : ["[无]"]),
+          ...(pool && pool.reference.length > 0 ? pool.reference.map(formatRagResult) : ["[无]"]),
           "",
           "综合入选候选：",
           ...ragPlan.selected.map(formatRagResult),
@@ -216,7 +265,7 @@ export async function buildCodexPrompt(store: Store, student: Student, course: C
           .join("\n\n");
 
   const basePrompt = `
-请使用项目内置 Codex skill：${skillName(course.type)}，为下面学生准备一节${courseTypeLabel(course.type)}。
+请使用项目内置备课 skill：${skillName(course.type)}，为下面学生准备一节${courseTypeLabel(course.type)}。
 
 项目内置 skill 位置：
 - skill 目录：${toRunnerProjectPath(skillDir)}
@@ -240,11 +289,13 @@ export async function buildCodexPrompt(store: Store, student: Student, course: C
 7. 优先阅读并使用“用户提供的本地题目/资料路径”中的文件；这些是人工指定资料，优先级高于自动 RAG
 8. 按下面的 RAG 检索计划使用入选资料：先阅读路径，再判断哪些题型/讲法适合本课；不要只复制摘录
 9. 仍需按 skill 要求做本地资料库检索和可靠网页真题检索，必要时补充 RAG 未覆盖的真题
-10. 大任务固定使用 sub-agent 分工；备课任务默认拆成四个工作流：题目提取、答案核对、课件生成、逐字稿和内容丰富。主 Agent 负责分派、整合和最终质量门禁，不能跳过答案核对、题量补充和逐字稿扩写。
+10. 大任务固定使用多 Agent/子任务分工；备课任务默认拆成四个工作流：题目提取、答案核对、课件生成、逐字稿和内容丰富。主 Agent 负责分派、整合和最终质量门禁，不能跳过答案核对、题量补充和逐字稿扩写。
 11. 必须先生成中间工作文件，再生成最终四件套；中间文件放在课程目录的 _work/ 下：
-   - _work/题目索引.md：列出候选与最终采用题，标注教学角色、难度、是否真题、是否进入课件；本地资料题不需要写入最终产物来源。
+   - _work/题目提取.md：列出从用户上传 PDF/图片、本地资料、RAG、网页真题中提取的题目，标注教学角色、难度、是否真题、是否进入课件、图形/文字是否清晰；如果 skill 内部沿用旧名 _work/题目索引.md，也要保证同等信息完整。
    - _work/候选题池.md：把本地资料、RAG、网页真题整理成候选题池，区分可直接上课、可改编成变式、只适合作参考、不采用。
    - _work/答案核对表.md：逐题写最终答案、关键条件、关键步骤、易错点、核对结论；不能出现未核对题。
+   - _work/课件生成计划.md：按课堂 PDF 页序写每页内容、题目编号、图形/表格需求、留白安排和不放答案的检查；如果已有 _work/课件页码映射.md，也要覆盖这些信息。
+   - _work/逐字稿丰富清单.md：按页面/题目列出逐字稿需要覆盖的教师话术、追问、预设学生回答、纠错话术、板书或批注提示、补充变式；如果已有 _work/内容丰富清单.md，也要覆盖这些信息。
 12. 采用两阶段内部流程：第一阶段完成题目提取、候选题池、答案核对、课程骨架；第二阶段再做课件生成、逐字稿和内容丰富、最终四件套。不要一上来直接写最终稿。
 13. 内容必须充实：题目序列要覆盖诊断、例题、变式、巩固、课后作业，逐字稿要按课堂页码逐页展开讲法、追问、学生可能反应、纠错话术和板书提示；不能只生成少量题或简略提纲。
 14. 资料详细程度与学生分数段无关：无论学生多少分，“知识点详解.md”和“老师逐字稿.md”都必须按最高备课密度写，让老师拿着资料直接讲，不会在“这一步为什么可以这样做”上卡壳。“60分学生能听懂”只是语言清晰度和前置铺垫的最低门槛，不是降低资料深度的理由。
@@ -266,7 +317,11 @@ export async function buildCodexPrompt(store: Store, student: Student, course: C
    - 函数专题要覆盖函数定义、定义域、值域、对应法则、相同函数判定、解析式/图像/表格/文字表示、图像点的含义、单调性、奇偶性或对称性、最值、零点、端点、参数影响等适用内容。二次函数要覆盖一般式/顶点式/交点式、开口方向、对称轴、顶点、判别式、根、与 x 轴交点、单调区间、区间最值和图像示意。最值要明确“区间最值通常来自端点值、内部极值点、不可导点或边界临界点”，并写清极值的必要条件和充分条件。零点要用图像说明与 x 轴交点，并区分穿过、相切、无交点和含参临界状态。
    - PDF 的题目页只放学生需要看到的题目、条件、必要图形、表格、坐标系和干净书写留白；不要放答案、完整过程、提示页、关键步骤 reveal 页或教师来源说明；书写留白不要画横线框框。
    - 智能混排：大题通常一题一页；同类小题可以合并一页，但必须保留足够书写空间。
-   - 几何、函数图像、坐标系、向量/复平面、统计图表等能用 LaTeX 画出的题，课堂 PDF 必须用 TikZ、pgfplots 或 LaTeX 表格画出来；不要省略与解题相关的图像。
+   - 几何、函数图像、坐标系、向量/复平面、统计图表等能程序化绘制的题，课堂 PDF 必须使用 TikZ、pgfplots、Asymptote 或 LaTeX 表格生成；不要省略与解题相关的图像。
+   - 立体几何图优先使用坐标驱动绘图：若环境有 Asymptote 则优先用 Asymptote；否则用 TikZ 固定斜投影。无论用哪种工具，都必须先定义真实 3D 坐标或明确投影基，再投影到页面，不能凭肉眼摆点。
+   - 几何图像质量是硬性要求，不能只画“能看见的大概图”。立体几何图必须满足：主体图宽通常不小于正文宽度的 45%，复杂图不小于 55%；点名不压线、不重叠、不贴边；实线表示可见棱和题目主线，虚线只表示被遮挡棱或辅助线，主线线宽要明显高于辅助线；关键点、动点、中点、垂足、截面或指定平面要用不同线型或浅色填充突出；大面积平面填充必须足够淡，不能遮挡主线、动点和点名；题目需要建系时，优先画“原几何图 + 建系/向量示意图”两个图，而不是把所有辅助线塞进一个图。
+   - 立体几何图必须保证平行、垂直、中点、等长、棱柱/棱锥关系与题设一致；禁止随手摆点造成 $D,E,M,N$ 等点的位置关系不准确。若透视会遮挡点名或主线，调整视角、降低面填充、加粗主线或拆图，不能让图形靠猜。
+   - 生成 PDF 后必须渲染至少所有含图题页并目视检查：图是否足够大、点名是否清楚、关键线段/平面是否突出、是否有遮挡或比例误导。若检查不通过，必须回到 TeX 重画并重新编译，不要把“很小但能看”的图作为最终产物。
    - 最后的“常用套路模板总结”不能硬总结：只有本节课题型确实有高频可迁移套路时才总结；每条写清适用题型/识别信号、使用条件、操作顺序和容易失效的情况。
 22. Markdown 里的数学公式必须规范：
    - 行内公式统一使用美元符号包裹，例如 $\\vec{a}=(2,-1)$、$X\\sim N(\\mu,\\sigma^2)$
@@ -275,7 +330,7 @@ export async function buildCodexPrompt(store: Store, student: Student, course: C
    - 不要留下未包裹的 LaTeX 片段，例如不要写「求 \\vec{a}\\cdot\\vec{b}」，必须写成「求 $\\vec{a}\\cdot\\vec{b}$」
    - 不要混用 \\(...\\)、\\[...\\] 和普通括号包公式；如果引用资料里有这种写法，写入最终 md 前必须改成美元符号格式
    - 向量命令优先写成带花括号形式，例如 \\vec{a}、\\vec{b}
-23. 只负责生成本地四个产物；不要在 Codex 任务内部调用 lark-cli。任务完成后，宿主服务会用当前机器已登录的 lark-cli user 身份统一完成飞书上传、日程创建和消息通知。
+23. 只负责生成本地四个产物；不要在备课生成任务内部调用 lark-cli。任务完成后，宿主服务会用当前机器已登录的 lark-cli user 身份统一完成飞书上传、日程创建和消息通知。
 
 ${formatConfirmedAiDraft(student, course)}
 
@@ -326,6 +381,7 @@ async function buildLessonFeishuEnv() {
 }
 
 function buildJobCommand(course: Course, lastMessagePath: string) {
+  // Codex SSH runner
   if (config.codexRunner === "ssh") {
     if (!config.codexSshHost) throw new Error("CODEX_RUNNER=ssh requires CODEX_SSH_HOST.");
     const remoteWorkspace = runnerWorkspace();
@@ -355,6 +411,7 @@ function buildJobCommand(course: Course, lastMessagePath: string) {
     return { command: "ssh", args, runner: "ssh" as const };
   }
 
+  // Codex 本地 runner
   return {
     command: config.codexCommand,
     args: buildCodexExecArgs(config.workspaceRoot, lastMessagePath),
@@ -492,7 +549,7 @@ export function runCodexJob(store: Store, jobId: string) {
         job.error = "生成质量检查未通过，系统已自动发起补救生成。";
         course.updatedAt = nowIso();
         store.save();
-        const refineJob = createCodexJob(store, course, {
+      const refineJob = createCodexJob(store, course, {
           refineInstruction: buildAutoQualityRefineInstruction(course, job, student)
         });
         runCodexJob(store, refineJob.id);
@@ -546,6 +603,26 @@ export function cancelCodexJob(store: Store, jobId: string) {
 
   activeJobs.delete(jobId);
   store.save();
+  return { ok: true, job, course };
+}
+
+export function continueCodexJob(store: Store, jobId: string) {
+  const failedJob = store.findJob(jobId);
+  if (!failedJob) return { ok: false, status: 404, error: "Job not found." };
+  const course = store.findCourse(failedJob.courseId);
+  if (!course) return { ok: false, status: 404, error: "Course not found." };
+  const runningJob = course.jobId ? store.findJob(course.jobId) : null;
+  if (runningJob?.status === "running" || runningJob?.status === "queued") {
+    return { ok: false, status: 409, error: "This course already has a running job." };
+  }
+  if (failedJob.status === "running" || failedJob.status === "queued") {
+    return { ok: false, status: 409, error: "该任务还在运行，不能继续。" };
+  }
+
+  const student = store.findStudent(course.studentId);
+  const job = createCodexJob(store, course, {
+    refineInstruction: buildContinueInstruction(store, course, failedJob, student)
+  });
   return { ok: true, job, course };
 }
 

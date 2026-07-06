@@ -1,9 +1,10 @@
 import express from "express";
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import multer from "multer";
+import pdfParse from "pdf-parse";
 import type { NextFunction, Request, Response } from "express";
 import {
   clearSessionCookie,
@@ -14,13 +15,13 @@ import {
   verifyPassword
 } from "./auth.js";
 import { backupFileName, createAppBackup } from "./backup.js";
-import { config, ensureAppDirs, tempUploadDir, uploadRoot } from "./config.js";
+import { config, ensureAppDirs, logsDir, tempUploadDir, uploadRoot } from "./config.js";
 import { createDiagnostics } from "./diagnostics.js";
 import { syncCourseToFeishu } from "./feishuSync.js";
 import { recoverCourseOutputDir } from "./courseOutput.js";
 import { assertWithinWorkspace, listCourseFiles, uniqueDestination } from "./files.js";
 import { onJobFinished } from "./jobEvents.js";
-import { cancelCodexJob, createCodexJob, recoverInterruptedJobs, runCodexJob } from "./jobs.js";
+import { cancelCodexJob, continueCodexJob, createCodexJob, recoverInterruptedJobs, runCodexJob } from "./jobs.js";
 import { assessCourseQuality } from "./quality.js";
 import {
   clearRagIndexCache,
@@ -50,6 +51,47 @@ recoverInterruptedJobs(store);
 const currentFile = fileURLToPath(import.meta.url);
 const serverDir = path.dirname(currentFile);
 const ragWorkerPath = path.join(serverDir, "rag-worker.js");
+const aiDraftMaxImageBytes = 8 * 1024 * 1024;
+const aiDraftMaxExtractedCharsPerFile = 12000;
+const aiDraftMaxExtractedCharsTotal = 50000;
+
+type ChatContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+class AiDraftCodexError extends Error {
+  logPath: string;
+
+  constructor(message: string, logPath: string) {
+    super(message);
+    this.name = "AiDraftCodexError";
+    this.logPath = logPath;
+  }
+}
+
+interface AiDraftAttachmentContext {
+  text: string;
+  images: ChatContentPart[];
+  summary: AiDraftAttachmentSummary;
+}
+
+type AiDraftAttachmentStatus = "ok" | "warn" | "error";
+
+interface AiDraftAttachmentItem {
+  name: string;
+  kind: "pdf" | "image" | "text" | "other";
+  status: AiDraftAttachmentStatus;
+  message: string;
+  pages?: number;
+  size: number;
+  savedPath?: string;
+}
+
+interface AiDraftAttachmentSummary {
+  fileCount: number;
+  imageCount: number;
+  items: AiDraftAttachmentItem[];
+}
 
 const app = express();
 if (config.trustProxy) app.set("trust proxy", 1);
@@ -128,6 +170,11 @@ function lessonDateSlug(lessonTime: string) {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}`;
 }
 
+function timestampSlug(date = new Date()) {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}`;
+}
+
 function makeOutputDir(studentName: string, courseType: CourseType, lessonTime: string, desiredContent: string) {
   const typeLabel = courseType === "trial" ? "试听课" : "正式课";
   const studentDir = path.join(config.workspaceRoot, sanitizeFilename(studentName, "学生"));
@@ -194,6 +241,7 @@ function inferLocalFiles(input: string) {
 function stripKnownLabels(input: string) {
   return input
     .replace(/学生[:：][^\n，。；;]+/g, "")
+    .replace(/学生情况[:：][^\n]+/g, "")
     .replace(/姓名[:：][^\n，。；;]+/g, "")
     .replace(/年级[:：][^\n，。；;]+/g, "")
     .replace(/分数[:：][^\n，。；;]+/g, "")
@@ -204,26 +252,88 @@ function stripKnownLabels(input: string) {
     .trim();
 }
 
+function inferStudentName(input: string) {
+  const explicit = firstMatch(input, [
+    /学生姓名[:：\s]*([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9·]{1,12})/,
+    /姓名[:：\s]*([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9·]{1,12})/,
+    /给([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9·]{1,12})(?:同学)?(?:上|备|做|安排)/
+  ]);
+  if (explicit && !/情况|学生|姓名/.test(explicit)) return explicit;
+
+  const situationLine = firstMatch(input, [/学生情况[:：\s]*([^\n]+)/]);
+  if (situationLine) {
+    const compact = situationLine.trim();
+    const beforeGender = compact.match(/^([\u4e00-\u9fa5A-Za-z·]{2,12})\s*(?:男|女)\b/);
+    if (beforeGender) return beforeGender[1];
+    const beforeGrade = compact.match(/^([\u4e00-\u9fa5A-Za-z·]{2,12})\s*(?:初|高)[一二三123]/);
+    if (beforeGrade) return beforeGrade[1];
+    const firstToken = compact.split(/\s+/)[0];
+    if (firstToken && !/情况|学生|姓名/.test(firstToken)) return firstToken;
+  }
+
+  return "待命名学生";
+}
+
+function inferScoreText(input: string) {
+  return firstMatch(input, [
+    /数学\s*([0-9]{1,3}(?:\.[0-9]+)?\s*分(?:[（(][^）)]*[）)])?)/,
+    /(?:分数|成绩|水平)[:：\s]*([0-9]{1,3}(?:\.[0-9]+)?\s*分?(?:[（(][^）)]*[）)])?)/,
+    /([0-9]{1,3}(?:\.[0-9]+)?\s*分(?:[（(][^）)]*[）)])?)/
+  ]);
+}
+
+function inferDesiredContentFromText(input: string) {
+  const explicit = firstMatch(input, [
+    /上课内容[:：\s]*([^\n。；;]{2,80})/,
+    /(?:想听|准备|备课内容|内容|专题|讲|学|复习|上)[:：\s]*([^\n。；;]{2,80})/,
+    /(?:讲|复习|巩固|提升)([^\n。；;]{2,60})/
+  ]);
+  if (explicit) return explicit;
+  return stripKnownLabels(input).slice(0, 80) || "待确认备课内容";
+}
+
+function buildFallbackCourseNotes(input: string) {
+  const hasGeometry = /立体几何|空间几何|空间向量|线面|面面|二面角|线面角|点面距/.test(input);
+  const localFiles = inferLocalFiles(input);
+  const summary = hasGeometry
+    ? [
+        "本节课需要的内容总结：",
+        "- 课程定位：40 分钟高中数学试听课，主题为立体几何薄弱巩固与查漏补缺。",
+        "- 学生基础：高三，数学 102 分，整体中等；学校基础较好，课堂需要耐心引导和互动提问。",
+        "- 备课主线：优先围绕上传考试 PDF 中的立体几何题，诊断其空间图形识别、定理调用、证明书写和计算转化问题。",
+        "- 课堂结构建议：先用 PDF 中一道立体几何题做诊断，再提炼通用方法，随后安排同类变式或口头检查，最后总结后续正式课路径。",
+        "- 核心讲法：不要只讲答案；要通过追问让学生说出线面关系、辅助线/建系选择、角与距离转化依据。",
+        "- 若 PDF 草稿阶段未能识别题目，正式备课 Agent 必须先读取本地题目/资料路径中的 PDF，提取立体几何相关题作为课堂主线。"
+      ]
+    : [
+        "本节课需要的内容总结：",
+        "- 根据原始沟通材料整理学生背景、课堂目标、薄弱点、例题与变式需求。",
+        "- 优先读取用户上传或填写的本地资料路径，正式备课时从材料中提取题目并做答案核对。",
+        "- 课堂需要包含诊断、方法讲解、同类验证、总结反馈。"
+      ];
+  return [
+    ...summary,
+    localFiles ? `- 用户提供资料路径：\n${localFiles}` : "",
+    "",
+    "原始沟通/题目材料：",
+    input
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 function createLessonDraftFromText(input: string) {
   const text = input.replace(/\r\n/g, "\n").trim();
-  const studentName =
-    firstMatch(text, [
-      /学生(?:姓名)?[:：\s]*([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9·]{0,12})/,
-      /姓名[:：\s]*([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9·]{0,12})/,
-      /给([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9·]{0,12})(?:同学)?(?:上|备|做|安排)/
-    ]) || "待命名学生";
-  const desiredContent =
-    firstMatch(text, [
-      /(?:想听|准备|备课内容|内容|专题|讲|学|复习|上)[:：\s]*([^\n。；;]{2,80})/,
-      /(?:讲|复习|巩固|提升)([^\n。；;]{2,60})/
-    ]) || stripKnownLabels(text).slice(0, 80) || "待确认备课内容";
+  const studentName = inferStudentName(text);
+  const desiredContent = inferDesiredContentFromText(text);
+  const hasGeometry = /立体几何|空间几何|空间向量|线面|面面|二面角|线面角|点面距/.test(text);
 
   return {
     student: {
       name: studentName,
       stage: inferStage(text),
       notes: firstMatch(text, [/(?:学生情况|学生画像|备注)[:：\s]*([^\n]+)/]) || stripKnownLabels(text).slice(0, 300),
-      weakPoints: firstMatch(text, [/(?:薄弱点|弱点|薄弱|不会|不熟|卡点)[:：\s]*([^\n]+)/]),
+      weakPoints: firstMatch(text, [/(?:薄弱点|弱点|薄弱|不会|不熟|卡点)[:：\s]*([^\n]+)/]) || (hasGeometry ? "立体几何薄弱，需要围绕考试题查漏补缺。" : ""),
       commonMistakes: firstMatch(text, [/(?:常错|易错|错题|错误|问题)[:：\s]*([^\n]+)/]),
       parentNotes: firstMatch(text, [/(?:家长|沟通|老师反馈|反馈)[:：\s]*([^\n]+)/]),
       nextLessonSuggestion: firstMatch(text, [/(?:下次课|后续|以后|下一步)[:：\s]*([^\n]+)/])
@@ -232,22 +342,300 @@ function createLessonDraftFromText(input: string) {
       type: inferCourseType(text),
       stage: inferStage(text),
       grade: inferGrade(text),
-      score: firstMatch(text, [/(?:分数|成绩|水平)[:：\s]*([^\n，。；;]+)/]),
+      score: inferScoreText(text),
       province: firstMatch(text, [/(?:地区|省市|试卷)[:：\s]*([^\n，。；;]+)/, /(新高考\s*[一二三IⅡIII]+卷?)/i]),
       textbook: firstMatch(text, [/(?:教材|版本)[:：\s]*([^\n，。；;]+)/]),
-      lessonKind: inferLessonKind(text),
-      desiredContent,
+      lessonKind: hasGeometry ? "专题提升" : inferLessonKind(text),
+      desiredContent: hasGeometry ? `立体几何薄弱巩固与考试 PDF 错题诊断` : desiredContent,
       lessonTime: normalizeLessonTime(firstMatch(text, [/(?:上课时间|时间|日期)[:：\s]*([^\n，。；;]+)/])),
       durationMinutes: inferDuration(text),
       localFiles: inferLocalFiles(text),
-      notes: [
-        "原始沟通/题目材料：",
-        text,
-        "",
-        "请正式备课时从以上材料中提炼：本次课核心知识点、题目暴露的问题、讲解顺序、例题与变式、课堂检测和课后反馈重点。"
-      ].join("\n")
+      notes: buildFallbackCourseNotes(text)
     }
   };
+}
+
+function truncateForPrompt(value: string, maxChars: number) {
+  const text = value.replace(/\r\n/g, "\n").trim();
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}\n\n[内容过长，已截断 ${text.length - maxChars} 个字符]`;
+}
+
+function fileExtension(file: Express.Multer.File) {
+  return path.extname(file.originalname || "").toLowerCase();
+}
+
+function isImageUpload(file: Express.Multer.File) {
+  const ext = fileExtension(file);
+  return file.mimetype.startsWith("image/") || [".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(ext);
+}
+
+function isPdfUpload(file: Express.Multer.File) {
+  return file.mimetype === "application/pdf" || fileExtension(file) === ".pdf";
+}
+
+function isTextUpload(file: Express.Multer.File) {
+  const ext = fileExtension(file);
+  return file.mimetype.startsWith("text/") || [".txt", ".md", ".markdown", ".tex", ".csv"].includes(ext);
+}
+
+function uploadKind(file: Express.Multer.File): AiDraftAttachmentItem["kind"] {
+  if (isPdfUpload(file)) return "pdf";
+  if (isImageUpload(file)) return "image";
+  if (isTextUpload(file)) return "text";
+  return "other";
+}
+
+async function pdfToImageParts(file: Express.Multer.File, maxPages: number) {
+  const outputDir = await fs.promises.mkdtemp(path.join(tempUploadDir, "ai-draft-pdf-"));
+  const prefix = path.join(outputDir, "page");
+  try {
+    const args = ["-png", "-r", "150", "-f", "1"];
+    if (maxPages > 0) args.push("-l", String(maxPages));
+    args.push(file.path, prefix);
+    const result = spawnSync("pdftoppm", args, {
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024
+    });
+    if (result.status !== 0) {
+      const detail = result.error?.message || result.stderr?.trim() || "pdftoppm failed";
+      throw new Error(detail);
+    }
+
+    const imageFiles = (await fs.promises.readdir(outputDir))
+      .filter((name) => name.endsWith(".png"))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    if (imageFiles.length === 0) throw new Error("PDF did not produce any page images.");
+
+    const parts: ChatContentPart[] = [];
+    for (const imageFile of imageFiles) {
+      const imagePath = path.join(outputDir, imageFile);
+      const stat = await fs.promises.stat(imagePath);
+      if (stat.size > aiDraftMaxImageBytes) continue;
+      const buffer = await fs.promises.readFile(imagePath);
+      parts.push({
+        type: "image_url",
+        image_url: { url: `data:image/png;base64,${buffer.toString("base64")}` }
+      });
+    }
+    if (parts.length === 0) throw new Error("PDF page images exceeded the per-image size limit.");
+    return parts;
+  } finally {
+    fs.promises.rm(outputDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+async function extractAiDraftAttachmentText(file: Express.Multer.File) {
+  const buffer = await fs.promises.readFile(file.path);
+  if (isPdfUpload(file)) {
+    const parsed = await pdfParse(buffer);
+    return parsed.text || "";
+  }
+  if (isTextUpload(file)) return buffer.toString("utf8");
+  return "";
+}
+
+async function saveAiDraftUploads(student: Student | undefined, files: Express.Multer.File[]) {
+  if (!student || files.length === 0) return [];
+
+  const uploadDir = path.join(config.workspaceRoot, sanitizeFilename(student.name, "学生"), "_uploads", "AI草稿", timestampSlug());
+  fs.mkdirSync(uploadDir, { recursive: true });
+  const saved: string[] = [];
+
+  for (const file of files) {
+    const destination = uniqueNestedDestination(uploadDir, file.originalname || "upload");
+    await fs.promises.rename(file.path, destination);
+    file.path = destination;
+    saved.push(destination);
+  }
+
+  return saved;
+}
+
+function mergeLocalFilesText(current: string, paths: string[]) {
+  const existing = new Set(
+    current
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+  );
+  for (const filePath of paths) {
+    if (filePath.trim()) existing.add(filePath.trim());
+  }
+  return [...existing].join("\n");
+}
+
+async function buildAiDraftAttachmentContext(files: Express.Multer.File[]): Promise<AiDraftAttachmentContext> {
+  const textBlocks: string[] = [];
+  const images: ChatContentPart[] = [];
+  const items: AiDraftAttachmentItem[] = [];
+  let extractedChars = 0;
+
+  for (const file of files) {
+    const name = file.originalname || "未命名文件";
+    const kind = uploadKind(file);
+    const savedPath = assertWithinWorkspace(file.path);
+    if (isPdfUpload(file)) {
+      try {
+        const extracted = await extractAiDraftAttachmentText(file);
+        if (extracted.trim()) {
+          const remaining = Math.max(0, aiDraftMaxExtractedCharsTotal - extractedChars);
+          const clipped = truncateForPrompt(extracted, Math.min(aiDraftMaxExtractedCharsPerFile, remaining));
+          extractedChars += clipped.length;
+          items.push({
+            name,
+            kind,
+            status: "ok",
+            message: `上传成功，已保存到学生目录，并提取 ${clipped.length} 个字符供草稿分析。`,
+            size: file.size,
+            savedPath
+          });
+          textBlocks.push(`### ${name}\n保存路径：${savedPath}\n${clipped}`);
+          continue;
+        }
+
+        if (config.lessonDraftAiProvider.toLowerCase() === "codex") {
+          items.push({
+            name,
+            kind,
+            status: "warn",
+            message: "上传成功，已保存到学生目录；未提取到 PDF 文本，将由 Codex 按路径自行读取。",
+            size: file.size,
+            savedPath
+          });
+          textBlocks.push(`### ${name}\n保存路径：${savedPath}\n[PDF 未提取到文本。请 Codex 按保存路径自行读取、转图片或 OCR，仅提炼草稿字段，不要正式备课。]`);
+          continue;
+        }
+
+        const pdfImages = await pdfToImageParts(file, Math.max(1, config.lessonDraftPdfImagePages));
+        images.push(...pdfImages);
+        items.push({
+          name,
+          kind,
+          status: "ok",
+          message: `上传成功，已保存到学生目录；未提取到文本，已转前 ${pdfImages.length} 页图片供草稿分析。`,
+          pages: pdfImages.length,
+          size: file.size,
+          savedPath
+        });
+        textBlocks.push(`### ${name}\n保存路径：${savedPath}\n[PDF 未提取到文本，已转前 ${pdfImages.length} 页图片发送给模型。完整文件请后续备课 Agent 按路径读取。]`);
+        continue;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        items.push({
+          name,
+          kind,
+          status: "warn",
+          message: `上传成功，已保存到学生目录；PDF 草稿解析失败，将只保留文件路径：${message}`,
+          size: file.size,
+          savedPath
+        });
+        textBlocks.push(`### ${name}\n保存路径：${savedPath}\n[PDF 草稿解析失败：${message}。正式备课时请按路径读取该文件。]`);
+        continue;
+      }
+    }
+
+    if (isImageUpload(file)) {
+      if (file.size > aiDraftMaxImageBytes) {
+        items.push({
+          name,
+          kind,
+          status: "error",
+          message: `图片超过 ${Math.round(aiDraftMaxImageBytes / 1024 / 1024)}MB，未发送给模型。`,
+          size: file.size,
+          savedPath
+        });
+        textBlocks.push(`### ${name}\n保存路径：${savedPath}\n[图片未发送：文件超过 ${Math.round(aiDraftMaxImageBytes / 1024 / 1024)}MB]`);
+        continue;
+      }
+      const buffer = await fs.promises.readFile(file.path);
+      const mimeType = file.mimetype || "image/jpeg";
+      images.push({
+        type: "image_url",
+        image_url: { url: `data:${mimeType};base64,${buffer.toString("base64")}` }
+      });
+      items.push({
+        name,
+        kind,
+        status: "ok",
+        message: "上传成功，已保存到学生目录，并作为图片发送给模型。",
+        size: file.size,
+        savedPath
+      });
+      textBlocks.push(`### ${name}\n保存路径：${savedPath}\n[已作为图片发送给模型，请结合图片内容提炼题目、错因和备课需求]`);
+      continue;
+    }
+
+    try {
+      const extracted = await extractAiDraftAttachmentText(file);
+      if (!extracted.trim()) {
+        items.push({
+          name,
+          kind,
+          status: "warn",
+          message: "上传成功，但未提取到文本；若是扫描版 PDF，请改传图片。",
+          size: file.size,
+          savedPath
+        });
+        textBlocks.push(`### ${name}\n保存路径：${savedPath}\n[未能提取文本。如果这是扫描版 PDF，请改传截图或图片。]`);
+        continue;
+      }
+      const remaining = Math.max(0, aiDraftMaxExtractedCharsTotal - extractedChars);
+      if (remaining <= 0) {
+        items.push({
+          name,
+          kind,
+          status: "warn",
+          message: "上传成功，但文本总量超过上限，未加入本次分析。",
+          size: file.size,
+          savedPath
+        });
+        textBlocks.push(`### ${name}\n保存路径：${savedPath}\n[文本未加入：上传文件文本总量已达到上限]`);
+        continue;
+      }
+      const clipped = truncateForPrompt(extracted, Math.min(aiDraftMaxExtractedCharsPerFile, remaining));
+      extractedChars += clipped.length;
+      items.push({
+        name,
+        kind,
+        status: "ok",
+        message: `上传成功，已保存到学生目录，并提取 ${clipped.length} 个字符发送给模型。`,
+        size: file.size,
+        savedPath
+      });
+      textBlocks.push(`### ${name}\n保存路径：${savedPath}\n${clipped}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      items.push({
+        name,
+        kind,
+        status: "error",
+        message: `文件解析失败：${message}`,
+        size: file.size,
+        savedPath
+      });
+      textBlocks.push(`### ${name}\n保存路径：${savedPath}\n[文件解析失败：${message}]`);
+    }
+  }
+
+  return {
+    text: textBlocks.length > 0 ? `\n\n上传文件内容：\n${textBlocks.join("\n\n")}` : "",
+    images,
+    summary: {
+      fileCount: files.length,
+      imageCount: images.length,
+      items
+    }
+  };
+}
+
+function removeTempUploadFiles(files: Express.Multer.File[]) {
+  const tempRoot = path.resolve(tempUploadDir);
+  for (const file of files) {
+    const resolved = path.resolve(file.path);
+    if (resolved === tempRoot || !resolved.startsWith(`${tempRoot}${path.sep}`)) continue;
+    fs.promises.unlink(file.path).catch(() => undefined);
+  }
 }
 
 function jsonFromModelText(text: string) {
@@ -265,6 +653,316 @@ function pickString(value: unknown) {
 
 function pickCourseType(value: unknown, fallback: CourseType): CourseType {
   return value === "trial" || /试听|体验/.test(String(value)) ? "trial" : value === "formal" || /正式/.test(String(value)) ? "formal" : fallback;
+}
+
+function quoteShellForLog(value: string) {
+  if (/^[\w.:\-/\\]+$/.test(value)) return value;
+  return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+function buildCodexDraftPrompt(input: string) {
+  return `
+你是备课工作台的“结构化草稿”助手，只负责整理字段，不要正式备课，不要生成课件、逐字稿、PDF 或课后反馈。
+
+请根据下面的原始沟通材料和上传文件路径，输出严格 JSON。不要解释，不要使用 Markdown 代码块。字段不能空泛，尤其 course.notes 必须像“备课任务摘要”一样可直接交给正式备课 Agent。
+
+如果材料里有本地 PDF/图片/文档路径，你可以按路径读取文件，只需要提炼学生信息、课程信息、题目主题、薄弱点和后续正式备课需要注意的点；不要完整解题，不要做完整课程。如果 PDF 暂时无法读取，也必须根据文字需求生成“本节课需要的内容总结”，并明确正式备课时优先读取该 PDF。
+
+JSON 结构必须是：
+{
+  "student": {
+    "name": "",
+    "stage": "",
+    "notes": "",
+    "weakPoints": "",
+    "commonMistakes": "",
+    "parentNotes": "",
+    "nextLessonSuggestion": ""
+  },
+  "course": {
+    "type": "trial",
+    "stage": "",
+    "grade": "",
+    "score": "",
+    "province": "",
+    "textbook": "",
+    "lessonKind": "",
+    "desiredContent": "",
+    "lessonTime": "",
+    "durationMinutes": 40,
+    "localFiles": "",
+    "notes": ""
+  }
+}
+
+字段要求：
+- type 只能是 "trial" 或 "formal"。
+- lessonTime 若能确定日期时间，请输出 ISO 或可解析的中文/数字时间；不能确定就留空。
+- localFiles 必须保留真实本地文件路径，多路径用换行。不要写“学生上传的 PDF”这种泛称。
+- student.name 必须是真实姓名，不要输出“学生情况”“情况”“学生”等标签词。
+- score 只写分数和水平，例如“102分（中等）”，不要把后面的分析句子并进去。
+- desiredContent 归纳成本次课最核心主题，例如“立体几何薄弱巩固与考试 PDF 错题诊断”。
+- course.notes 必须包含“本节课需要的内容总结”，至少写清：
+  1. 课程定位和课长；
+  2. 学生基础、性格/课堂引导要求；
+  3. 本节课知识主线；
+  4. 上传 PDF 在正式备课中的用途；
+  5. 建议课堂顺序；
+  6. 例题、变式、检测和课后反馈重点。
+- 若文件读不到或无法识别具体题目，在 commonMistakes 或 notes 中明确写“需正式备课时读取路径继续分析”，不要编造题目。
+
+原始材料：
+${input}
+`.trim();
+}
+
+function buildCodexDraftContinuePrompt(previousLog: string) {
+  return `
+你正在继续一次中断或未完成的“AI 备课草稿”结构化任务。
+
+下面是上一次 Codex 草稿任务的日志，里面可能包含已经读到的 PDF 题面、页面观察、stdout/stderr、错误信息、last message 或部分 JSON。
+
+请继续利用这些上下文完成结构化草稿。不要重新正式备课，不要生成课件、逐字稿、PDF 或课后反馈。只输出严格 JSON，不要解释，不要 Markdown 代码块。
+
+如果日志中已经有足够信息，请直接整理成最终 JSON；如果日志里已有完整 JSON，请校正后原样输出。JSON 结构仍为：
+{
+  "student": {
+    "name": "",
+    "stage": "",
+    "notes": "",
+    "weakPoints": "",
+    "commonMistakes": "",
+    "parentNotes": "",
+    "nextLessonSuggestion": ""
+  },
+  "course": {
+    "type": "trial",
+    "stage": "",
+    "grade": "",
+    "score": "",
+    "province": "",
+    "textbook": "",
+    "lessonKind": "",
+    "desiredContent": "",
+    "lessonTime": "",
+    "durationMinutes": 40,
+    "localFiles": "",
+    "notes": ""
+  }
+}
+
+course.notes 必须包含“本节课需要的内容总结”，写清课程定位、学生基础、知识主线、PDF 用途、课堂顺序、例题/变式/检测/反馈重点。
+
+上一次日志：
+${previousLog}
+`.trim();
+}
+
+function readAiDraftLog(logPath: string) {
+  const resolved = path.resolve(logPath);
+  const logsRoot = path.resolve(logsDir);
+  if (!resolved.startsWith(`${logsRoot}${path.sep}`) || !path.basename(resolved).startsWith("ai-draft-codex-")) {
+    throw new Error("Invalid draft continuation log path.");
+  }
+  if (!fs.existsSync(resolved)) throw new Error("Draft continuation log was not found.");
+  return fs.readFileSync(resolved, "utf8");
+}
+
+function parseDraftFromLog(input: string, logContent: string) {
+  const parsedMarker = "## parsed json source";
+  const parsedIndex = logContent.lastIndexOf(parsedMarker);
+  if (parsedIndex >= 0) {
+    const source = logContent.slice(parsedIndex + parsedMarker.length).split("\n## parse error")[0]?.trim() || "";
+    if (source) return mergeAiLessonDraft(input, jsonFromModelText(source));
+  }
+
+  const lastMessageMarker = "## last message";
+  const lastMessageIndex = logContent.lastIndexOf(lastMessageMarker);
+  if (lastMessageIndex >= 0) {
+    const source = logContent.slice(lastMessageIndex + lastMessageMarker.length).split("\n## parsed json source")[0]?.trim() || "";
+    if (source) return mergeAiLessonDraft(input, jsonFromModelText(source));
+  }
+
+  return mergeAiLessonDraft(input, jsonFromModelText(logContent));
+}
+
+function runCodexLessonDraftPrompt(prompt: string, mergeInput: string, logPrefix = "ai-draft-codex") {
+  fs.mkdirSync(tempUploadDir, { recursive: true });
+  fs.mkdirSync(logsDir, { recursive: true });
+  const logId = `${logPrefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const logPath = path.join(logsDir, `${logId}.log`);
+  const lastMessagePath = path.join(tempUploadDir, `${logId}.last.md`);
+  const args = ["exec", "-C", config.workspaceRoot, "--sandbox", "danger-full-access", "--output-last-message", lastMessagePath];
+  if (config.codexModel) args.push("--model", config.codexModel);
+  args.push("-");
+
+  const startedAt = new Date();
+  fs.writeFileSync(
+    logPath,
+    [
+      `# ${config.codexCommand} ${args.map(quoteShellForLog).join(" ")}`,
+      "",
+      `startedAt=${startedAt.toISOString()}`,
+      `cwd=${config.workspaceRoot}`,
+      `timeoutMs=${config.lessonDraftCodexTimeoutMs > 0 ? config.lessonDraftCodexTimeoutMs : "none"}`,
+      `lastMessagePath=${lastMessagePath}`,
+      "",
+      "## prompt",
+      prompt,
+      "",
+      "## process result",
+      "[running]"
+    ].join("\n"),
+    "utf8"
+  );
+  const result = spawnSync(config.codexCommand, args, {
+    cwd: config.workspaceRoot,
+    input: prompt,
+    encoding: "utf8",
+    timeout: config.lessonDraftCodexTimeoutMs > 0 ? config.lessonDraftCodexTimeoutMs : undefined,
+    maxBuffer: 8 * 1024 * 1024,
+    env: {
+      ...process.env,
+      PREP_WORKSPACE: config.workspaceRoot,
+      LESSON_PREP_WEB_ROOT: config.projectRoot
+    },
+    shell: process.platform === "win32",
+    windowsHide: true
+  });
+
+  try {
+    const endedAt = new Date();
+    const lastMessage = fs.existsSync(lastMessagePath) ? fs.readFileSync(lastMessagePath, "utf8") : "";
+    fs.appendFileSync(
+      logPath,
+      [
+        "",
+        `endedAt=${endedAt.toISOString()}`,
+        `durationMs=${endedAt.getTime() - startedAt.getTime()}`,
+        `status=${String(result.status)}`,
+        `signal=${String(result.signal)}`,
+        `error=${result.error ? result.error.message : ""}`,
+        "",
+        "## stdout",
+        result.stdout || "",
+        "",
+        "## stderr",
+        result.stderr || "",
+        "",
+        "## last message",
+        lastMessage,
+        "",
+        "## parsed json source",
+        lastMessage.trim() || result.stdout?.trim() || ""
+      ].join("\n"),
+      "utf8"
+    );
+    const content = lastMessage.trim() || result.stdout?.trim() || "";
+    if (content) {
+      try {
+        const draft = mergeAiLessonDraft(mergeInput, jsonFromModelText(content));
+        if (result.error || result.status !== 0) {
+          fs.appendFileSync(
+            logPath,
+            [
+              "",
+              "## recovered despite process error",
+              result.error ? result.error.message : `Codex exited with code ${result.status}`
+            ].join("\n"),
+            "utf8"
+          );
+        }
+        return draft;
+      } catch (error) {
+        fs.appendFileSync(
+          logPath,
+          [
+            "",
+            "## parse error",
+            error instanceof Error ? error.stack || error.message : String(error)
+          ].join("\n"),
+          "utf8"
+        );
+        if (!result.error && result.status === 0) {
+          throw new AiDraftCodexError(`Codex 草稿返回内容不是可解析 JSON：${error instanceof Error ? error.message : String(error)}`, logPath);
+        }
+      }
+    }
+
+    if (result.error) throw new AiDraftCodexError(result.error.message, logPath);
+    if (result.status !== 0) {
+      const detail = result.stderr?.trim() || result.stdout?.trim() || `Codex exited with code ${result.status}`;
+      throw new AiDraftCodexError(detail, logPath);
+    }
+    if (!content) throw new AiDraftCodexError("Codex draft returned empty content.", logPath);
+    try {
+      return mergeAiLessonDraft(mergeInput, jsonFromModelText(content));
+    } catch (error) {
+      fs.appendFileSync(
+        logPath,
+        [
+          "",
+          "## parse error",
+          error instanceof Error ? error.stack || error.message : String(error)
+        ].join("\n"),
+        "utf8"
+      );
+      throw new AiDraftCodexError(`Codex 草稿返回内容不是可解析 JSON：${error instanceof Error ? error.message : String(error)}`, logPath);
+    }
+  } finally {
+    fs.promises.unlink(lastMessagePath).catch(() => undefined);
+  }
+}
+
+function runCodexLessonDraft(input: string) {
+  return runCodexLessonDraftPrompt(buildCodexDraftPrompt(input), input);
+}
+
+function continueCodexLessonDraft(logPath: string) {
+  const logContent = readAiDraftLog(logPath);
+  try {
+    return parseDraftFromLog(logContent, logContent);
+  } catch {
+    const clippedLog = logContent.length > 120000 ? logContent.slice(-120000) : logContent;
+    return runCodexLessonDraftPrompt(buildCodexDraftContinuePrompt(clippedLog), logContent, "ai-draft-codex-continue");
+  }
+}
+
+function draftResponse(draft: ReturnType<typeof createLessonDraftFromText>, savedPaths: string[] = []) {
+  const now = nowIso();
+  const student: Student = {
+    id: "draft_student",
+    name: draft.student.name,
+    stage: draft.student.stage,
+    notes: draft.student.notes,
+    weakPoints: draft.student.weakPoints,
+    commonMistakes: draft.student.commonMistakes,
+    parentNotes: draft.student.parentNotes,
+    nextLessonSuggestion: draft.student.nextLessonSuggestion,
+    createdAt: now,
+    updatedAt: now
+  };
+  const course: Course = {
+    id: "draft_course",
+    studentId: student.id,
+    type: draft.course.type,
+    stage: draft.course.stage,
+    grade: draft.course.grade,
+    score: draft.course.score,
+    province: draft.course.province,
+    textbook: draft.course.textbook,
+    lessonKind: draft.course.lessonKind,
+    desiredContent: draft.course.desiredContent,
+    lessonTime: draft.course.lessonTime,
+    durationMinutes: draft.course.durationMinutes,
+    localFiles: mergeLocalFilesText(draft.course.localFiles, savedPaths),
+    notes: draft.course.notes,
+    outputDir: makeOutputDir(student.name, draft.course.type, draft.course.lessonTime, draft.course.desiredContent),
+    status: "draft",
+    createdAt: now,
+    updatedAt: now
+  };
+  return { student, course };
 }
 
 function mergeAiLessonDraft(input: string, ai: Record<string, unknown>) {
@@ -298,11 +996,22 @@ function mergeAiLessonDraft(input: string, ai: Record<string, unknown>) {
   };
 }
 
-async function createLessonDraft(input: string) {
+async function createLessonDraft(
+  input: string,
+  attachmentContext: AiDraftAttachmentContext = { text: "", images: [], summary: { fileCount: 0, imageCount: 0, items: [] } }
+) {
+  const modelInput = `${input}${attachmentContext.text}`;
+  if (config.lessonDraftAiProvider.toLowerCase() === "codex") {
+    return runCodexLessonDraft(modelInput);
+  }
   if (config.lessonDraftAiProvider.toLowerCase() !== "ark" || !config.lessonDraftAiApiKey) {
-    return createLessonDraftFromText(input);
+    return createLessonDraftFromText(modelInput);
   }
   try {
+    const userContent: string | ChatContentPart[] =
+      attachmentContext.images.length > 0
+        ? [{ type: "text", text: modelInput }, ...attachmentContext.images]
+        : modelInput;
     const response = await fetch(config.lessonDraftAiEndpoint, {
       method: "POST",
       headers: {
@@ -323,10 +1032,10 @@ async function createLessonDraft(input: string) {
                 "student.notes 写学生长期画像，例如学习习惯、课堂状态、接受能力、沟通方式、已知背景；weakPoints 写知识薄弱点；commonMistakes 写从题目和反馈中暴露出的常错题型、典型错误、方法问题；parentNotes 写家长或其他老师的原始诉求和关注点；nextLessonSuggestion 写后续连续课建议。",
                 "desiredContent 要归纳成本次课最核心的备课主题，不能太散；course.notes 写本次备课的详细要求，必须保留题目内容或题目特征、课堂重点、讲解顺序、难度梯度、例题/变式/检测需求、产物要求、注意事项。",
                 "如果原文只给了零散题目，你要从题目反推知识点、能力缺口和本次课应该怎么讲；如果信息不足，可以在 course.notes 里列出需要老师确认的问题，但不要编造学生事实。",
-                "course.notes 建议用短条目组织，保证正式调用 Codex 时可以直接作为备课任务依据。"
+                "course.notes 建议用短条目组织，保证正式调用 AI 备课 Agent 时可以直接作为备课任务依据。"
               ].join("\n")
           },
-          { role: "user", content: input }
+          { role: "user", content: userContent }
         ],
         temperature: 0.1
       })
@@ -336,9 +1045,9 @@ async function createLessonDraft(input: string) {
     const payload = responseText ? JSON.parse(responseText) : {};
     const content = payload?.choices?.[0]?.message?.content;
     if (typeof content !== "string") throw new Error("Ark draft parse returned empty content.");
-    return mergeAiLessonDraft(input, jsonFromModelText(content));
+    return mergeAiLessonDraft(modelInput, jsonFromModelText(content));
   } catch {
-    return createLessonDraftFromText(input);
+    return createLessonDraftFromText(modelInput);
   }
 }
 
@@ -640,15 +1349,16 @@ async function startRagEmbeddingJob(materialId = "") {
 }
 
 app.get("/api/system", (req, res) => {
-  const ragStats = getRagStats(store);
+  const ragQuestionCount = store.data.materials.reduce((sum, material) => sum + (material.questionCount || 0), 0);
+  const ragSnippetCount = store.data.materials.reduce((sum, material) => sum + (material.snippetCount || 0), 0);
   res.json({
     setupRequired: store.data.users.length === 0,
     workspaceRoot: config.workspaceRoot,
     codexAutoRun: config.codexAutoRun,
     codexRunner: config.codexRunner,
-    ragChunkCount: ragStats.chunks,
-    ragQuestionCount: ragStats.questions,
-    ragSnippetCount: ragStats.snippets
+    ragChunkCount: ragQuestionCount + ragSnippetCount,
+    ragQuestionCount,
+    ragSnippetCount
   });
 });
 
@@ -826,47 +1536,54 @@ app.delete("/api/students/:studentId", requireAuth, (req, res) => {
 app.post(
   "/api/ai-drafts/lesson",
   requireAuth,
+  upload.array("files"),
   asyncHandler(async (req, res) => {
     const input = requiredString(req.body.input);
-    if (input.length < 4) {
+    const files = (req.files || []) as Express.Multer.File[];
+    if (input.length < 4 && files.length === 0) {
       res.status(400).json({ error: "请先输入备课需求。" });
       return;
     }
-    const draft = await createLessonDraft(input);
-    const now = nowIso();
-    const student: Student = {
-      id: "draft_student",
-      name: draft.student.name,
-      stage: draft.student.stage,
-      notes: draft.student.notes,
-      weakPoints: draft.student.weakPoints,
-      commonMistakes: draft.student.commonMistakes,
-      parentNotes: draft.student.parentNotes,
-      nextLessonSuggestion: draft.student.nextLessonSuggestion,
-      createdAt: now,
-      updatedAt: now
-    };
-    const course: Course = {
-      id: "draft_course",
-      studentId: student.id,
-      type: draft.course.type,
-      stage: draft.course.stage,
-      grade: draft.course.grade,
-      score: draft.course.score,
-      province: draft.course.province,
-      textbook: draft.course.textbook,
-      lessonKind: draft.course.lessonKind,
-      desiredContent: draft.course.desiredContent,
-      lessonTime: draft.course.lessonTime,
-      durationMinutes: draft.course.durationMinutes,
-      localFiles: draft.course.localFiles,
-      notes: draft.course.notes,
-      outputDir: makeOutputDir(student.name, draft.course.type, draft.course.lessonTime, draft.course.desiredContent),
-      status: "draft",
-      createdAt: now,
-      updatedAt: now
-    };
-    res.json({ draft: { student, course } });
+    const existingStudent = requiredString(req.body.studentId) ? store.findStudent(requiredString(req.body.studentId)) : undefined;
+    if (files.length > 0 && !existingStudent) {
+      res.status(404).json({ error: "上传文件需要先选择有效学生。" });
+      removeTempUploadFiles(files);
+      return;
+    }
+    let attachmentContext: AiDraftAttachmentContext;
+    let savedPaths: string[] = [];
+    try {
+      savedPaths = await saveAiDraftUploads(existingStudent, files);
+      attachmentContext = await buildAiDraftAttachmentContext(files);
+    } finally {
+      removeTempUploadFiles(files);
+    }
+    console.info(
+      `[ai-draft] files=${attachmentContext.summary.fileCount} images=${attachmentContext.summary.imageCount} ` +
+        attachmentContext.summary.items.map((item) => `${item.status}:${item.name}:${item.savedPath || ""}:${item.message}`).join(" | ")
+    );
+    const draft = await createLessonDraft(input || "请根据上传文件生成备课草稿。", attachmentContext);
+    const { student, course } = draftResponse(draft, savedPaths);
+    res.json({ draft: { student, course }, attachments: attachmentContext.summary });
+  })
+);
+
+app.post(
+  "/api/ai-drafts/lesson/continue",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const logPath = requiredString(req.body.logPath);
+    if (!logPath) {
+      res.status(400).json({ error: "缺少可继续的草稿日志路径。" });
+      return;
+    }
+    const draft = continueCodexLessonDraft(logPath);
+    const { student, course } = draftResponse(draft);
+    res.json({
+      draft: { student, course },
+      attachments: { fileCount: 0, imageCount: 0, items: [] },
+      continuedFrom: logPath
+    });
   })
 );
 
@@ -1225,6 +1942,20 @@ app.post("/api/jobs/:jobId/cancel", requireAuth, (req, res) => {
   res.json(result);
 });
 
+app.post("/api/jobs/:jobId/continue", requireAuth, (req, res) => {
+  const result = continueCodexJob(store, routeParam(req, "jobId"));
+  if (!result.ok) {
+    res.status(result.status ?? 500).json({ error: result.error });
+    return;
+  }
+  if (!result.job || !result.course) {
+    res.status(500).json({ error: "继续生成任务创建失败。" });
+    return;
+  }
+  runCodexJob(store, result.job.id);
+  res.json({ job: result.job, course: publicCourse(result.course) });
+});
+
 app.get("/api/files/content", requireAuth, (req, res) => {
   const filePath = requiredString(req.query.path);
   const resolved = assertWithinWorkspace(filePath);
@@ -1405,6 +2136,15 @@ app.use((error: Error, req: Request, res: Response, next: NextFunction) => {
   }
   if (anyError.name === "SyntaxError" && "body" in anyError) {
     res.status(400).json({ error: "请求 JSON 格式不正确。" });
+    return;
+  }
+  if (error instanceof AiDraftCodexError) {
+    res.status(503).json({
+      error: `${error.message}。可以点击“继续生成草稿”从上次日志继续。`,
+      draftContinue: {
+        logPath: error.logPath
+      }
+    });
     return;
   }
   res.status(500).json({ error: error.message });

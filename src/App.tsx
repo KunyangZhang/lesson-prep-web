@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -48,6 +48,27 @@ interface AiLessonDraft {
   course: Course;
 }
 
+interface AiDraftAttachmentItem {
+  name: string;
+  kind: "pdf" | "image" | "text" | "other";
+  status: "ok" | "warn" | "error";
+  message: string;
+  pages?: number;
+  size: number;
+  savedPath?: string;
+}
+
+interface AiDraftAttachmentSummary {
+  fileCount: number;
+  imageCount: number;
+  items: AiDraftAttachmentItem[];
+}
+
+interface AiDraftContinueState {
+  logPath: string;
+  message: string;
+}
+
 interface SessionState {
   system: SystemInfo | null;
   user: User | null;
@@ -85,6 +106,12 @@ const emptyAiInput = [
 ].join("\n");
 
 const folderPickerProps = { webkitdirectory: "", directory: "" };
+const agentWorkFiles = [
+  { paths: ["_work/题目提取.md", "_work/题目索引.md"], label: "题目提取" },
+  { paths: ["_work/答案核对表.md"], label: "答案核对" },
+  { paths: ["_work/课件生成计划.md", "_work/课件页码映射.md"], label: "课件生成" },
+  { paths: ["_work/逐字稿丰富清单.md", "_work/内容丰富清单.md"], label: "逐字稿丰富" }
+];
 
 function useInterval(callback: () => void, delay: number | null) {
   useEffect(() => {
@@ -334,19 +361,21 @@ export default function App() {
   }, []);
 
   const loadSession = useCallback(async () => {
-    const system = await api.get<SystemInfo>("/api/system");
+    const systemPromise = api.get<SystemInfo>("/api/system");
+    const mePromise = api.get<{ user: User }>("/api/me").catch(() => null);
+    const system = await systemPromise;
     if (system.setupRequired) {
       setSession({ system, user: null, loading: false });
       return;
     }
 
-    try {
-      const me = await api.get<{ user: User }>("/api/me");
+    const me = await mePromise;
+    if (me) {
       setSession({ system, user: me.user, loading: false });
       await loadStudents();
-    } catch {
-      setSession({ system, user: null, loading: false });
+      return;
     }
+    setSession({ system, user: null, loading: false });
   }, [loadStudents]);
 
   useEffect(() => {
@@ -448,57 +477,6 @@ export default function App() {
               </button>
             </nav>
 
-            <section className="student-rail">
-              <CreateStudentForm
-                onCreated={async (student) => {
-                  await loadStudents();
-                  setSelectedStudentId(student.id);
-                  setView("students");
-                }}
-                onError={setError}
-              />
-
-              <div className="rail-list">
-                {students.map((student) => (
-                  <div
-                    key={student.id}
-                    className={student.id === selectedStudentId ? "rail-item active" : "rail-item"}
-                  >
-                    <button
-                      className="rail-select"
-                      onClick={() => {
-                        setSelectedStudentId(student.id);
-                        setView("students");
-                      }}
-                    >
-                      <span>
-                        <strong>{student.name}</strong>
-                        <small>{student.stage || "未设置学段"} · {student.courseCount || 0} 节课</small>
-                      </span>
-                      <ChevronRight size={16} />
-                    </button>
-                    <button
-                      className="icon-button danger-icon"
-                      title="删除学生"
-                      aria-label="删除学生"
-                      onClick={async () => {
-                        if (!window.confirm(`删除学生「${student.name}」？课程记录会从网页移除，但已生成文件会保留。`)) return;
-                        try {
-                          await api.del(`/api/students/${student.id}`);
-                          setSelectedCourseId("");
-                          await loadStudents();
-                        } catch (err) {
-                          setError(err instanceof Error ? err.message : String(err));
-                        }
-                      }}
-                    >
-                      <Trash2 size={15} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </section>
-
             <section className="sidebar-footer">
               <button className="logout-button" onClick={() => setAccountOpen((value) => !value)}>
                 <Settings size={17} />
@@ -542,10 +520,21 @@ export default function App() {
           <MaterialsView system={session.system} onError={setError} />
         ) : (
           <StudentWorkspace
+            students={students}
             student={selectedStudent}
+            selectedStudentId={selectedStudentId}
             courses={courses}
             selectedCourse={selectedCourse}
+            onSelectStudent={(id) => {
+              setSelectedStudentId(id);
+              setView("students");
+            }}
             onSelectCourse={setSelectedCourseId}
+            onCreateStudent={async (student) => {
+              await loadStudents();
+              setSelectedStudentId(student.id);
+              setView("students");
+            }}
             onCreated={async (course) => {
               await loadCourses(course.studentId);
               setSelectedCourseId(course.id);
@@ -563,6 +552,12 @@ export default function App() {
               if (!window.confirm(`删除课程「${course.desiredContent || "未命名课程"}」？已生成文件会保留。`)) return;
               await api.del(`/api/courses/${course.id}`);
               await loadCourses(course.studentId);
+            }}
+            onDeleteStudent={async (student) => {
+              if (!window.confirm(`删除学生「${student.name}」？课程记录会从网页移除，但已生成文件会保留。`)) return;
+              await api.del(`/api/students/${student.id}`);
+              setSelectedCourseId("");
+              await loadStudents();
             }}
             onError={setError}
           />
@@ -907,121 +902,178 @@ function CreateStudentForm({
 }
 
 function StudentWorkspace({
+  students,
   student,
+  selectedStudentId,
   courses,
   selectedCourse,
+  onSelectStudent,
   onSelectCourse,
+  onCreateStudent,
   onCreated,
   onRefresh,
   onStudentSaved,
   onDeleteCourse,
+  onDeleteStudent,
   onError
 }: {
+  students: Student[];
   student: Student | null;
+  selectedStudentId: string;
   courses: Course[];
   selectedCourse: Course | null;
+  onSelectStudent: (id: string) => void;
   onSelectCourse: (id: string) => void;
+  onCreateStudent: (student: Student) => void;
   onCreated: (course: Course) => void;
   onRefresh: () => Promise<void> | void;
   onStudentSaved: () => Promise<void> | void;
   onDeleteCourse: (course: Course) => Promise<void>;
+  onDeleteStudent: (student: Student) => Promise<void>;
   onError: (message: string) => void;
 }) {
   const [showForm, setShowForm] = useState(false);
   const [showAiDraft, setShowAiDraft] = useState(false);
 
-  if (!student) {
-    return (
-      <section className="empty-state">
-        <UserRound size={28} />
-        <h2>先创建一个学生</h2>
-      </section>
-    );
-  }
-
   return (
-    <div className="student-workspace">
-      <header className="workspace-header">
-        <div>
-          <p className="eyebrow">学生</p>
-          <h2>{student.name}</h2>
-          <span>{student.stage || "未设置学段"}</span>
-        </div>
-        <div className="header-actions">
-          <button className="ghost-button" onClick={() => onRefresh()}>
-            <RefreshCcw size={16} />
-            刷新
-          </button>
-          <button className="ghost-button" onClick={() => setShowAiDraft((value) => !value)}>
-            <Sparkles size={17} />
-            AI 草稿
-          </button>
-          <button className="primary-button" onClick={() => setShowForm((value) => !value)}>
-            <Plus size={17} />
-            新建课程
-          </button>
-        </div>
-      </header>
-
-      {showAiDraft ? (
-        <AiLessonDraftPanel
-          initialStudent={student}
-          onCreated={async (course) => {
-            setShowAiDraft(false);
-            onCreated(course);
-          }}
-          onError={onError}
-        />
-      ) : null}
-
-      {showForm ? (
-        <CourseForm
-          student={student}
-          onCreated={(course) => {
-            setShowForm(false);
-            onCreated(course);
-          }}
-          onError={onError}
-        />
-      ) : null}
-
-      <StudentProfilePanel student={student} onSaved={onStudentSaved} onError={onError} />
-
-      <div className="content-grid">
-        <section className="course-list-panel">
-          <div className="panel-title">
-            <FolderOpen size={18} />
-            <h3>课程</h3>
+    <div className="student-workspace studio-shell">
+      <section className="student-switcher-panel">
+        <div className="source-head">
+          <div>
+            <p className="eyebrow">学生库</p>
+            <h2>学生</h2>
           </div>
-          {courses.length === 0 ? (
-            <div className="quiet-empty">暂无课程</div>
-          ) : (
-            <div className="course-list">
-              {courses.map((course) => (
-                <div key={course.id} className={course.id === selectedCourse?.id ? "course-item active" : "course-item"}>
-                  <button className="course-select" onClick={() => onSelectCourse(course.id)}>
-                    <span className={statusClass(course.status)}>{statusLabel(course.status)}</span>
-                    <strong>{course.desiredContent || "未命名课程"}</strong>
-                    <small>
-                      {course.type === "trial" ? "试听课" : "正式课"} · {course.grade || "年级待填"} · {formatDate(course.lessonTime)}
-                    </small>
+          <span>{students.length}</span>
+        </div>
+        <div className="student-switcher-actions">
+          <CreateStudentForm onCreated={onCreateStudent} onError={onError} />
+        </div>
+        <div className="student-switcher-list">
+          {students.map((item) => (
+            <div key={item.id} className={item.id === selectedStudentId ? "student-chip active" : "student-chip"}>
+              <button className="student-source-main" onClick={() => onSelectStudent(item.id)}>
+                <span className="student-avatar">{item.name.slice(0, 1)}</span>
+                <span>
+                  <strong>{item.name}</strong>
+                  <small>{item.stage || "未设置学段"} · {item.courseCount || 0} 节课</small>
+                </span>
+              </button>
+              <button
+                className="icon-button danger-icon"
+                title="删除学生"
+                aria-label="删除学生"
+                onClick={() => onDeleteStudent(item).catch((err) => onError(err.message))}
+              >
+                <Trash2 size={15} />
+              </button>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="studio-main">
+        {student ? (
+          <>
+            <section className="student-plan-column">
+              <header className="planner-header">
+                <div>
+                  <p className="eyebrow">备课台</p>
+                  <h2>{student.name}</h2>
+                  <span>{student.stage || "未设置学段"}</span>
+                </div>
+                <div className="header-actions">
+                  <button className="ghost-button" onClick={() => onRefresh()}>
+                    <RefreshCcw size={16} />
+                    刷新
                   </button>
-                  <button
-                    className="icon-button danger-icon"
-                    title="删除课程"
-                    aria-label="删除课程"
-                    onClick={() => onDeleteCourse(course).catch((err) => onError(err.message))}
-                  >
-                    <Trash2 size={15} />
+                  <button className="ghost-button" onClick={() => setShowAiDraft((value) => !value)}>
+                    <Sparkles size={17} />
+                    AI 草稿
+                  </button>
+                  <button className="primary-button" onClick={() => setShowForm((value) => !value)}>
+                    <Plus size={17} />
+                    新建课程
                   </button>
                 </div>
-              ))}
-            </div>
-          )}
-        </section>
+              </header>
 
-        <CourseDetail student={student} course={selectedCourse} onRefresh={onRefresh} onDeleteCourse={onDeleteCourse} onError={onError} />
-      </div>
+              {showAiDraft || showForm ? (
+                <section className="workspace-drawer">
+                  {showAiDraft ? (
+                    <AiLessonDraftPanel
+                      initialStudent={student}
+                      onCreated={async (course) => {
+                        setShowAiDraft(false);
+                        onCreated(course);
+                      }}
+                      onError={onError}
+                    />
+                  ) : null}
+
+                  {showForm ? (
+                    <CourseForm
+                      student={student}
+                      onCreated={(course) => {
+                        setShowForm(false);
+                        onCreated(course);
+                      }}
+                      onError={onError}
+                    />
+                  ) : null}
+                </section>
+              ) : null}
+
+              <StudentProfilePanel student={student} onSaved={onStudentSaved} onError={onError} />
+
+              <StudentDossierPanel student={student} courses={courses} />
+
+              <section className="course-board">
+                <div className="section-title">
+                  <div>
+                    <strong>课程队列</strong>
+                    <small>{courses.length} 节课程</small>
+                  </div>
+                  <FolderOpen size={18} />
+                </div>
+                {courses.length === 0 ? (
+                  <div className="quiet-empty">暂无课程</div>
+                ) : (
+                  <div className="course-list">
+                    {courses.map((course) => (
+                      <div key={course.id} className={course.id === selectedCourse?.id ? "course-item active" : "course-item"}>
+                        <button className="course-select" onClick={() => onSelectCourse(course.id)}>
+                          <span className={statusClass(course.status)}>{statusLabel(course.status)}</span>
+                          <strong>{course.desiredContent || "未命名课程"}</strong>
+                          <small>
+                            {course.type === "trial" ? "试听课" : "正式课"} · {course.grade || "年级待填"} · {formatDate(course.lessonTime)}
+                          </small>
+                        </button>
+                        <button
+                          className="icon-button danger-icon"
+                          title="删除课程"
+                          aria-label="删除课程"
+                          onClick={() => onDeleteCourse(course).catch((err) => onError(err.message))}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </section>
+
+            <section className="course-stage-panel">
+              <CourseDetail student={student} course={selectedCourse} onRefresh={onRefresh} onDeleteCourse={onDeleteCourse} onError={onError} />
+            </section>
+          </>
+        ) : (
+          <section className="empty-state planner-empty">
+            <UserRound size={28} />
+            <h2>先创建一个学生</h2>
+          </section>
+        )}
+      </section>
     </div>
   );
 }
@@ -1120,6 +1172,79 @@ function StudentProfilePanel({
         </label>
       </div>
     </form>
+  );
+}
+
+function StudentDossierPanel({ student, courses }: { student: Student; courses: Course[] }) {
+  const completedCourses = courses.filter((course) => course.status === "completed");
+  const runningCourses = courses.filter((course) => course.status === "running" || course.status === "queued");
+  const coveredItems = courses
+    .map((course) => course.desiredContent || course.lessonKind || course.grade)
+    .filter(Boolean)
+    .slice(0, 10);
+  const recentRecords = [...courses]
+    .sort((a, b) => {
+      const left = new Date(a.lessonTime || a.createdAt || 0).getTime();
+      const right = new Date(b.lessonTime || b.createdAt || 0).getTime();
+      return right - left;
+    })
+    .slice(0, 6);
+
+  return (
+    <section className="student-dossier-panel">
+      <div className="section-title">
+        <div>
+          <strong>长期学生档案</strong>
+          <small>自动汇总上课记录、已学内容和当前状态</small>
+        </div>
+        <BookOpen size={18} />
+      </div>
+
+      <div className="dossier-metrics">
+        <div>
+          <strong>{courses.length}</strong>
+          <span>累计课程</span>
+        </div>
+        <div>
+          <strong>{completedCourses.length}</strong>
+          <span>已完成</span>
+        </div>
+        <div>
+          <strong>{runningCourses.length}</strong>
+          <span>进行中</span>
+        </div>
+      </div>
+
+      <div className="dossier-section">
+        <span className="dossier-label">已上/已规划内容</span>
+        {coveredItems.length > 0 ? (
+          <div className="covered-content-list">
+            {coveredItems.map((item, index) => (
+              <span key={`${item}-${index}`}>{item}</span>
+            ))}
+          </div>
+        ) : (
+          <small className="dossier-empty">创建课程后会自动沉淀内容</small>
+        )}
+      </div>
+
+      <div className="dossier-section">
+        <span className="dossier-label">上课记录</span>
+        {recentRecords.length > 0 ? (
+          <div className="lesson-timeline">
+            {recentRecords.map((course) => (
+              <button key={course.id} type="button" className="lesson-record" title={course.desiredContent || "未命名课程"}>
+                <span className={statusClass(course.status)}>{statusLabel(course.status)}</span>
+                <strong>{course.desiredContent || "未命名课程"}</strong>
+                <small>{formatDate(course.lessonTime || course.createdAt)} · {course.durationMinutes || 90} 分钟</small>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <small className="dossier-empty">{student.name} 还没有上课记录</small>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -1271,8 +1396,14 @@ function AiLessonDraftPanel({
     nextLessonSuggestion: initialStudent.nextLessonSuggestion || ""
   });
   const [courseForm, setCourseForm] = useState({ ...emptyCourseForm, autoRun: false, stage: initialStudent.stage || emptyCourseForm.stage });
+  const [draftFiles, setDraftFiles] = useState<File[]>([]);
+  const [attachmentSummary, setAttachmentSummary] = useState<AiDraftAttachmentSummary | null>(null);
+  const [uploadMessage, setUploadMessage] = useState("");
+  const [draftContinue, setDraftContinue] = useState<AiDraftContinueState | null>(null);
   const [generating, setGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
+  const draftFileInputRef = useRef<HTMLInputElement | null>(null);
+  const draftImageInputRef = useRef<HTMLInputElement | null>(null);
 
   function updateStudent(name: string, value: string) {
     setStudentForm((current) => ({ ...current, [name]: value }));
@@ -1282,37 +1413,94 @@ function AiLessonDraftPanel({
     setCourseForm((current) => ({ ...current, [name]: value }));
   }
 
+  function addDraftFiles(files: FileList | null) {
+    const selectedFiles = Array.from(files || []);
+    if (selectedFiles.length === 0) {
+      setUploadMessage("没有读取到选择的文件，请重新选择。");
+      return;
+    }
+    setDraftFiles((current) => [...current, ...selectedFiles]);
+    setAttachmentSummary(null);
+    setUploadMessage(`已选择 ${selectedFiles.length} 个文件，生成草稿时会一起上传。`);
+    setDraftContinue(null);
+  }
+
+  function applyDraftData(data: { draft: AiLessonDraft; attachments?: AiDraftAttachmentSummary }) {
+    if (data.attachments) setAttachmentSummary(data.attachments);
+    setUploadMessage(
+      data.attachments && data.attachments.fileCount > 0
+        ? `上传成功：${data.attachments.fileCount} 个文件已保存到学生目录，结构化草稿会保留真实文件路径。`
+        : "结构化草稿已生成。"
+    );
+    setDraft(data.draft);
+    setStudentForm({
+      name: data.draft.student.name || initialStudent.name,
+      stage: data.draft.student.stage || initialStudent.stage || "高中数学",
+      notes: data.draft.student.notes || initialStudent.notes || "",
+      weakPoints: data.draft.student.weakPoints || initialStudent.weakPoints || "",
+      commonMistakes: data.draft.student.commonMistakes || initialStudent.commonMistakes || "",
+      parentNotes: data.draft.student.parentNotes || initialStudent.parentNotes || "",
+      nextLessonSuggestion: data.draft.student.nextLessonSuggestion || initialStudent.nextLessonSuggestion || ""
+    });
+    setCourseForm({
+      type: data.draft.course.type,
+      stage: data.draft.course.stage || initialStudent.stage || "高中数学",
+      grade: data.draft.course.grade || "",
+      score: data.draft.course.score || "",
+      province: data.draft.course.province || "",
+      textbook: data.draft.course.textbook || "",
+      lessonKind: data.draft.course.lessonKind || "专题提升",
+      desiredContent: data.draft.course.desiredContent || "",
+      lessonTime: toDatetimeLocalValue(data.draft.course.lessonTime),
+      durationMinutes: data.draft.course.durationMinutes || 90,
+      localFiles: data.draft.course.localFiles || "",
+      notes: data.draft.course.notes || input,
+      autoRun: false
+    });
+    setDraftContinue(null);
+  }
+
   async function generateDraft(event: React.FormEvent) {
     event.preventDefault();
     setGenerating(true);
+    setAttachmentSummary(null);
+    setUploadMessage(draftFiles.length > 0 ? `正在上传并分析 ${draftFiles.length} 个文件...` : "");
     try {
-      const data = await api.post<{ draft: AiLessonDraft }>("/api/ai-drafts/lesson", { input });
-      setDraft(data.draft);
-      setStudentForm({
-        name: data.draft.student.name || initialStudent.name,
-        stage: data.draft.student.stage || initialStudent.stage || "高中数学",
-        notes: data.draft.student.notes || initialStudent.notes || "",
-        weakPoints: data.draft.student.weakPoints || initialStudent.weakPoints || "",
-        commonMistakes: data.draft.student.commonMistakes || initialStudent.commonMistakes || "",
-        parentNotes: data.draft.student.parentNotes || initialStudent.parentNotes || "",
-        nextLessonSuggestion: data.draft.student.nextLessonSuggestion || initialStudent.nextLessonSuggestion || ""
-      });
-      setCourseForm({
-        type: data.draft.course.type,
-        stage: data.draft.course.stage || initialStudent.stage || "高中数学",
-        grade: data.draft.course.grade || "",
-        score: data.draft.course.score || "",
-        province: data.draft.course.province || "",
-        textbook: data.draft.course.textbook || "",
-        lessonKind: data.draft.course.lessonKind || "专题提升",
-        desiredContent: data.draft.course.desiredContent || "",
-        lessonTime: toDatetimeLocalValue(data.draft.course.lessonTime),
-        durationMinutes: data.draft.course.durationMinutes || 90,
-        localFiles: data.draft.course.localFiles || "",
-        notes: data.draft.course.notes || input,
-        autoRun: false
-      });
+      const formData = new FormData();
+      formData.append("input", input);
+      formData.append("studentId", initialStudent.id);
+      draftFiles.forEach((file) => formData.append("files", file, file.name));
+      const data = await api.post<{ draft: AiLessonDraft; attachments: AiDraftAttachmentSummary }>("/api/ai-drafts/lesson", formData);
+      applyDraftData(data);
     } catch (err) {
+      const data = (err as Error & { data?: { draftContinue?: { logPath?: string } } }).data;
+      const logPath = data?.draftContinue?.logPath || "";
+      if (logPath) {
+        setDraftContinue({ logPath, message: err instanceof Error ? err.message : String(err) });
+        setUploadMessage("Codex 草稿中断，可以点击继续生成草稿。");
+      } else {
+        setUploadMessage(draftFiles.length > 0 ? "上传或分析失败，请查看错误提示后重试。" : "");
+      }
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function continueDraft() {
+    if (!draftContinue) return;
+    setGenerating(true);
+    setUploadMessage("正在从上次日志继续生成草稿...");
+    try {
+      const data = await api.post<{ draft: AiLessonDraft; attachments: AiDraftAttachmentSummary }>("/api/ai-drafts/lesson/continue", {
+        logPath: draftContinue.logPath
+      });
+      applyDraftData(data);
+    } catch (err) {
+      const data = (err as Error & { data?: { draftContinue?: { logPath?: string } } }).data;
+      const logPath = data?.draftContinue?.logPath || draftContinue.logPath;
+      setDraftContinue({ logPath, message: err instanceof Error ? err.message : String(err) });
+      setUploadMessage("继续生成仍然中断，可以稍后再次点击继续。");
       onError(err instanceof Error ? err.message : String(err));
     } finally {
       setGenerating(false);
@@ -1343,16 +1531,93 @@ function AiLessonDraftPanel({
             <Sparkles size={17} />
             <strong>AI 备课草稿</strong>
           </span>
-          <small>只整理学生和课程字段，调用 Codex 时再检索资料</small>
+          <small>只整理学生和课程字段，调用备课 Agent 时再检索资料</small>
         </div>
         <label>
           非结构化备课内容
           <textarea value={input} onChange={(event) => setInput(event.target.value)} rows={10} />
         </label>
-        <button className="primary-button" disabled={generating || !input.trim()}>
+        <section className="resource-picker ai-draft-files">
+          <div className="resource-actions">
+            <button type="button" className="ghost-button" onClick={() => draftFileInputRef.current?.click()}>
+              <Upload size={16} />
+              上传 PDF/文件
+            </button>
+            <input
+              ref={draftFileInputRef}
+              className="hidden-file-input"
+              type="file"
+              accept=".pdf,.txt,.md,.markdown,.tex,.csv,application/pdf,text/*"
+              multiple
+              onChange={(event) => {
+                addDraftFiles(event.target.files);
+                event.target.value = "";
+              }}
+            />
+            <button type="button" className="ghost-button" onClick={() => draftImageInputRef.current?.click()}>
+              <Image size={16} />
+              上传图片
+            </button>
+            <input
+              ref={draftImageInputRef}
+              className="hidden-file-input"
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={(event) => {
+                addDraftFiles(event.target.files);
+                event.target.value = "";
+              }}
+            />
+            <span>{draftFiles.length > 0 ? `${draftFiles.length} 个文件将随草稿分析` : "支持 PDF 文本和题目截图"}</span>
+          </div>
+          {draftFiles.length > 0 ? (
+            <div className="draft-file-list">
+              {draftFiles.map((file, index) => (
+                <span key={`${file.name}-${file.lastModified}-${index}`}>
+                  {file.name}
+                  <button
+                    type="button"
+                    aria-label={`移除 ${file.name}`}
+                    onClick={() => {
+                      setDraftFiles((current) => current.filter((_, itemIndex) => itemIndex !== index));
+                      setAttachmentSummary(null);
+                      setUploadMessage("");
+                    }}
+                  >
+                    <X size={13} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {uploadMessage ? <div className="upload-status">{generating ? <Loader2 className="spin" size={14} /> : <CheckCircle2 size={14} />}{uploadMessage}</div> : null}
+          {attachmentSummary?.items.length ? (
+            <div className="attachment-status-list">
+              {attachmentSummary.items.map((item, index) => (
+                <div className={`attachment-status ${item.status}`} key={`${item.name}-${index}`}>
+                  <strong>{item.name}</strong>
+                  <span>{item.message}</span>
+                  {item.savedPath ? <small>{item.savedPath}</small> : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </section>
+        <button className="primary-button" disabled={generating || (!input.trim() && draftFiles.length === 0)}>
           {generating ? <Loader2 className="spin" size={17} /> : <Sparkles size={17} />}
           生成结构化草稿
         </button>
+        {draftContinue ? (
+          <div className="draft-continue-box">
+            <span>{draftContinue.message}</span>
+            <small>{draftContinue.logPath}</small>
+            <button type="button" className="ghost-button" disabled={generating} onClick={() => continueDraft()}>
+              {generating ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
+              继续生成草稿
+            </button>
+          </div>
+        ) : null}
       </form>
 
       <div className="ai-draft-review">
@@ -1367,7 +1632,7 @@ function AiLessonDraftPanel({
           <>
             <StructuredLessonFields studentForm={studentForm} courseForm={courseForm} updateStudent={updateStudent} updateCourse={updateCourse} />
             <div className="form-footer">
-              <button type="button" className="primary-button" disabled={saving || !courseForm.desiredContent.trim() || !studentForm.name.trim()} onClick={saveDraft}>
+              <button type="button" className="primary-button" disabled={saving || !courseForm.desiredContent.trim() || !studentForm.name.trim()} onClick={() => saveDraft()}>
                 {saving ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
                 确认并调用 Codex
               </button>
@@ -1696,7 +1961,7 @@ function CourseSettingsPanel({
       <div className="form-heading">
         <div>
           <strong>课程设置</strong>
-          <small>修改后再次调用 Codex 会使用这里的新信息</small>
+          <small>修改后再次调用备课 Agent 会使用这里的新信息</small>
         </div>
         <button type="button" className="tiny-icon-button" title="关闭" aria-label="关闭课程设置" onClick={onCancel}>
           <X size={16} />
@@ -1918,6 +2183,22 @@ function CourseDetail({
     }
   }
 
+  async function continueJob(jobId: string) {
+    setBusy(true);
+    try {
+      const data = await api.post<{ job: Job }>(`/api/jobs/${jobId}/continue`);
+      setJob(data.job);
+      setLogTail("");
+      setManualQuality(null);
+      await onRefresh();
+      await loadJobs();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function checkQuality() {
     if (!course) return;
     setCheckingQuality(true);
@@ -1935,10 +2216,14 @@ function CourseDetail({
 
   const currentQuality = job?.quality || manualQuality;
   const selectedMaterials = splitLocalFiles(course.localFiles);
+  const agentWorkStatus = agentWorkFiles.map((workFile) => ({
+    ...workFile,
+    file: files.find((file) => workFile.paths.includes(file.relativePath.replace(/\\/g, "/"))) || null
+  }));
 
   return (
-    <section className="detail-panel">
-      <header className="detail-header">
+    <section className="detail-panel course-console">
+      <header className="detail-header course-console-header">
         <div>
           <span className={statusClass(course.status)}>{statusLabel(course.status)}</span>
           <h3>{course.desiredContent || "未命名课程"}</h3>
@@ -1946,7 +2231,7 @@ function CourseDetail({
             {course.type === "trial" ? "试听课" : "正式课"} · {course.grade || "年级待填"} · {course.durationMinutes} 分钟
           </p>
         </div>
-        <div className="button-row">
+        <div className="button-row command-bar">
           <button className="ghost-button" disabled={checkingQuality || polling} onClick={checkQuality}>
             {checkingQuality ? <Loader2 className="spin" size={17} /> : <CheckCircle2 size={17} />}
             质量检查
@@ -1965,7 +2250,7 @@ function CourseDetail({
             <Trash2 size={17} />
             删除课程
           </button>
-          <button className="primary-button" disabled={busy || polling} onClick={runCourse}>
+          <button className="primary-button" disabled={busy || polling} onClick={() => runCourse()}>
             {busy || polling ? <Loader2 className="spin" size={17} /> : <Play size={17} />}
             调用 Codex
           </button>
@@ -1992,97 +2277,112 @@ function CourseDetail({
         />
       ) : null}
 
-      <div className="detail-grid">
-        <section className="file-panel">
-          <div className="panel-title">
-            <FileText size={18} />
-            <h4>产物</h4>
-          </div>
-          <label className="upload-line">
-            <Upload size={16} />
-            上传本地文件/图片
-            <input type="file" multiple onChange={uploadAttachments} />
-          </label>
-          <div className="course-material-picker">
-            <div className="material-select-row">
-              <Search size={16} />
-              <input
-                value={materialQuery}
-                onChange={(event) => setMaterialQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    searchCourseMaterials();
-                  }
-                }}
-                placeholder="搜索资料库并加入本课"
-              />
-              <button type="button" className="ghost-button" disabled={searchingMaterials || polling} onClick={searchCourseMaterials}>
-                {searchingMaterials ? <Loader2 className="spin" size={16} /> : <Search size={16} />}
-              </button>
+      <div className="course-console-grid">
+        <FilePreview file={selectedFile} />
+
+        <section className="file-panel course-tools-panel">
+          <section className="tool-group">
+            <div className="panel-title">
+              <FileText size={18} />
+              <h4>资料与产物</h4>
             </div>
-            {materialResults.length > 0 ? (
-              <div className="material-pick-list compact">
-                {materialResults.slice(0, 5).map((result) => (
-                  <button
-                    type="button"
-                    key={result.material.path}
-                    disabled={polling}
-                    onClick={() => selectCourseMaterial(result.material.path)}
-                  >
-                    <strong>{result.material.title}</strong>
-                    <small>{result.reason}</small>
-                  </button>
+            <label className="upload-line">
+              <Upload size={16} />
+              上传本地文件/图片
+              <input type="file" multiple onChange={uploadAttachments} />
+            </label>
+            <div className="course-material-picker">
+              <div className="material-select-row">
+                <Search size={16} />
+                <input
+                  value={materialQuery}
+                  onChange={(event) => setMaterialQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      searchCourseMaterials();
+                    }
+                  }}
+                  placeholder="搜索资料库并加入本课"
+                />
+                <button type="button" className="ghost-button" disabled={searchingMaterials || polling} onClick={searchCourseMaterials}>
+                  {searchingMaterials ? <Loader2 className="spin" size={16} /> : <Search size={16} />}
+                </button>
+              </div>
+              {materialResults.length > 0 ? (
+                <div className="material-pick-list compact">
+                  {materialResults.slice(0, 5).map((result) => (
+                    <button
+                      type="button"
+                      key={result.material.path}
+                      disabled={polling}
+                      onClick={() => selectCourseMaterial(result.material.path)}
+                    >
+                      <strong>{result.material.title}</strong>
+                      <small>{result.reason}</small>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            {selectedMaterials.length > 0 ? (
+              <div className="selected-materials">
+                <strong>已选资料</strong>
+                {selectedMaterials.map((item) => (
+                  <div key={item} className="selected-material-row">
+                    <span title={item}>{localFileLabel(item)}</span>
+                    <button
+                      className="icon-button danger-icon"
+                      disabled={polling}
+                      title="移除"
+                      aria-label="移除已选资料"
+                      onClick={() => removeCourseMaterial(item)}
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
                 ))}
               </div>
             ) : null}
-          </div>
-          {selectedMaterials.length > 0 ? (
-            <div className="selected-materials">
-              <strong>已选资料</strong>
-              {selectedMaterials.map((item) => (
-                <div key={item} className="selected-material-row">
-                  <span title={item}>{localFileLabel(item)}</span>
-                  <button
-                    className="icon-button danger-icon"
-                    disabled={polling}
-                    title="移除"
-                    aria-label="移除已选资料"
-                    onClick={() => removeCourseMaterial(item)}
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-              ))}
+          </section>
+
+          <section className="tool-group">
+            <AgentWorkPanel items={agentWorkStatus} />
+          </section>
+
+          <section className="tool-group generated-files">
+            <div className="panel-title">
+              <FolderOpen size={18} />
+              <h4>生成文件</h4>
             </div>
-          ) : null}
-          <div className="file-list">
-            {files.length === 0 ? (
-              <div className="quiet-empty">等待生成文件</div>
-            ) : (
-              files.map((file) => (
-                <div
-                  key={file.path}
-                  className={file.path === selectedFile?.path ? "file-row active" : "file-row"}
-                >
-                  <button className="file-select" onClick={() => setSelectedPath(file.path)}>
-                    <span>{file.name}</span>
-                    <small>{file.kind}</small>
-                  </button>
-                  <a
-                    className="icon-button"
-                    title="新页面打开"
-                    aria-label="新页面打开"
-                    href={`/viewer?path=${encodeURIComponent(file.path)}`}
-                    target="_blank"
-                    rel="noreferrer"
+            <div className="file-list">
+              {files.length === 0 ? (
+                <div className="quiet-empty">等待生成文件</div>
+              ) : (
+                files.map((file) => (
+                  <div
+                    key={file.path}
+                    className={file.path === selectedFile?.path ? "file-row active" : "file-row"}
                   >
-                    <ExternalLink size={15} />
-                  </a>
-                </div>
-              ))
-            )}
-          </div>
+                    <button className="file-select" onClick={() => setSelectedPath(file.path)}>
+                      <span>{file.name}</span>
+                      <small>{file.kind}</small>
+                    </button>
+                    <a
+                      className="icon-button"
+                      title="新页面打开"
+                      aria-label="新页面打开"
+                      href={`/viewer?path=${encodeURIComponent(file.path)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <ExternalLink size={15} />
+                    </a>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
 
           {currentQuality ? <QualityPanel quality={currentQuality} /> : null}
 
@@ -2091,12 +2391,18 @@ function CourseDetail({
               <div className="job-log-title">
                 <span className={statusClass(job.status)}>{statusLabel(job.status)}</span>
                 <small>{job.exitCode ?? ""}</small>
+                {job.status === "failed" || job.status === "canceled" ? (
+                  <button className="ghost-button" disabled={busy || polling} onClick={() => continueJob(job.id)}>
+                    {busy ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
+                    继续生成
+                  </button>
+                ) : null}
               </div>
               <pre>{logTail || "暂无日志"}</pre>
             </div>
           ) : null}
 
-          {jobs.length > 0 ? <JobHistory jobs={jobs} /> : null}
+          {jobs.length > 0 ? <JobHistory jobs={jobs} disabled={busy || polling} onContinue={continueJob} /> : null}
 
           <form className="refine-panel" onSubmit={refineCourse}>
             <label>
@@ -2115,8 +2421,30 @@ function CourseDetail({
             </button>
           </form>
         </section>
+      </div>
+    </section>
+  );
+}
 
-        <FilePreview file={selectedFile} />
+function AgentWorkPanel({
+  items
+}: {
+  items: Array<{ paths: string[]; label: string; file: CourseFile | null }>;
+}) {
+  const completed = items.filter((item) => item.file).length;
+  return (
+    <section className="agent-work-panel">
+      <div className="agent-work-head">
+        <strong>多 Agent 工作区</strong>
+        <small>{completed}/{items.length}</small>
+      </div>
+      <div className="agent-work-list">
+        {items.map((item) => (
+          <div key={item.label} className={item.file ? "agent-work-item done" : "agent-work-item missing"}>
+            <span>{item.label}</span>
+            <small>{item.file ? `${Math.max(1, Math.round(item.file.size / 1024))} KB · ${formatDate(item.file.updatedAt)}` : "待生成"}</small>
+          </div>
+        ))}
       </div>
     </section>
   );
@@ -2160,7 +2488,15 @@ function QualityPanel({ quality }: { quality: NonNullable<Job["quality"]> }) {
   );
 }
 
-function JobHistory({ jobs }: { jobs: Job[] }) {
+function JobHistory({
+  jobs,
+  disabled,
+  onContinue
+}: {
+  jobs: Job[];
+  disabled: boolean;
+  onContinue: (jobId: string) => void;
+}) {
   return (
     <section className="job-history">
       <strong>生成记录</strong>
@@ -2174,6 +2510,12 @@ function JobHistory({ jobs }: { jobs: Job[] }) {
             </small>
             {historyJob.quality ? <small>质量评分 {historyJob.quality.score}</small> : null}
           </div>
+          {historyJob.status === "failed" || historyJob.status === "canceled" ? (
+            <button className="ghost-button" disabled={disabled} onClick={() => onContinue(historyJob.id)}>
+              <RefreshCcw size={15} />
+              继续
+            </button>
+          ) : null}
         </div>
       ))}
     </section>
@@ -2367,8 +2709,8 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
   const browserEntries = useMemo(() => buildMaterialEntries(materials, uploadRoot, currentPath), [materials, uploadRoot, currentPath]);
 
   return (
-    <section className="materials-view">
-      <header className="workspace-header">
+    <section className="materials-view settings-workspace">
+      <header className="workspace-header workspace-hero">
         <div>
           <p className="eyebrow">资料库</p>
           <h2>本地 RAG 索引</h2>
@@ -2396,7 +2738,7 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
         </div>
       </header>
 
-      <div className="stat-row">
+      <div className="stat-row materials-stats">
         <div>
           <Boxes size={18} />
           <strong>{totalMaterialCount}</strong>
@@ -2448,136 +2790,148 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
       {docNotice ? <div className="doc-notice">{docNotice}</div> : null}
       {uploadNotice ? <div className="doc-notice">{uploadNotice}</div> : null}
 
-      <section className="search-band">
-        <Search size={18} />
-        <input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") search().catch((err) => onError(err.message));
-          }}
-          placeholder="搜索知识点、题型、年级"
-        />
-        <button onClick={() => search().catch((err) => onError(err.message))}>搜索</button>
-      </section>
-
-      {results.length > 0 ? (
-        <section className="rag-results">
-          {results.map((result) => (
-            <article key={result.chunk.id} className="result-item">
-              <strong>
-                {result.question ? `${result.question.questionNumber || result.question.label} · ` : ""}
-                {result.material.title}
-              </strong>
-              <small>{result.material.path}</small>
-              {result.question ? (
-                <div className="result-meta">
-                  <span>{sourceKindLabel(result.question.sourceKind)}</span>
-                  <span>{result.question.questionType}</span>
-                  <span>难度：{result.question.difficulty}</span>
-                  <span>{result.question.hasAnswer ? "有解析" : "需验算"}</span>
-                  {result.question.examSource ? <span>{result.question.examSource}</span> : null}
-                </div>
-              ) : result.snippet ? (
-                <div className="result-meta">
-                  <span>{result.snippet.kind}</span>
-                  <span>知识参考</span>
-                </div>
-              ) : null}
-              <span className="result-reason">{result.reason}</span>
-              <p>{result.excerpt}</p>
-            </article>
-          ))}
-        </section>
-      ) : null}
-
-      <section className="materials-table">
-        <div className="material-browser-header">
-          <div>
-            <strong>{currentPath || "全部资料"}</strong>
-            <small>{currentPath ? "当前文件夹" : "文件夹优先显示"}</small>
+      <div className="materials-layout">
+        <section className="materials-search-panel">
+          <div className="panel-title">
+            <Search size={18} />
+            <h3>资料检索</h3>
           </div>
-          {currentPath ? (
-            <button className="ghost-button" onClick={() => setCurrentPath(parentMaterialPath(currentPath))}>
-              <ArrowLeft size={16} />
-              返回上级
-            </button>
-          ) : null}
-        </div>
-        {materials.length === 0 ? (
-          <div className="quiet-empty">暂无索引资料</div>
-        ) : browserEntries.length === 0 ? (
-          <div className="quiet-empty">这个文件夹里暂无可显示资料</div>
-        ) : (
-          browserEntries.map((entry) => (
-            entry.kind === "folder" ? (
-              <article key={`folder-${entry.path}`} className="material-row material-folder">
-                <div>
-                  <button className="material-folder-open" onClick={() => setCurrentPath(entry.path)}>
-                    <FolderOpen size={17} />
-                    <span>{entry.name}</span>
-                  </button>
-                  <small>{entry.count} 个文件</small>
-                </div>
-                <div className="material-actions">
-                  <button className="icon-button" title="打开文件夹" aria-label="打开文件夹" onClick={() => setCurrentPath(entry.path)}>
-                    <ChevronRight size={18} />
-                  </button>
-                  <button
-                    className="icon-button danger-icon"
-                    disabled={busy}
-                    title="删除文件夹"
-                    aria-label="删除文件夹"
-                    onClick={() => deleteMaterialFolder(entry)}
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              </article>
+          <section className="search-band">
+            <Search size={18} />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") search().catch((err) => onError(err.message));
+              }}
+              placeholder="搜索知识点、题型、年级"
+            />
+            <button onClick={() => search().catch((err) => onError(err.message))}>搜索</button>
+          </section>
+
+          {results.length > 0 ? (
+            <section className="rag-results">
+              {results.map((result) => (
+                <article key={result.chunk.id} className="result-item">
+                  <strong>
+                    {result.question ? `${result.question.questionNumber || result.question.label} · ` : ""}
+                    {result.material.title}
+                  </strong>
+                  <small>{result.material.path}</small>
+                  {result.question ? (
+                    <div className="result-meta">
+                      <span>{sourceKindLabel(result.question.sourceKind)}</span>
+                      <span>{result.question.questionType}</span>
+                      <span>难度：{result.question.difficulty}</span>
+                      <span>{result.question.hasAnswer ? "有解析" : "需验算"}</span>
+                      {result.question.examSource ? <span>{result.question.examSource}</span> : null}
+                    </div>
+                  ) : result.snippet ? (
+                    <div className="result-meta">
+                      <span>{result.snippet.kind}</span>
+                      <span>知识参考</span>
+                    </div>
+                  ) : null}
+                  <span className="result-reason">{result.reason}</span>
+                  <p>{result.excerpt}</p>
+                </article>
+              ))}
+            </section>
+          ) : (
+            <div className="quiet-empty">输入关键词检索题目、解析和知识片段</div>
+          )}
+        </section>
+
+        <section className="materials-browser-panel">
+          <section className="materials-table">
+            <div className="material-browser-header">
+              <div>
+                <strong>{currentPath || "全部资料"}</strong>
+                <small>{currentPath ? "当前文件夹" : "文件夹优先显示"}</small>
+              </div>
+              {currentPath ? (
+                <button className="ghost-button" onClick={() => setCurrentPath(parentMaterialPath(currentPath))}>
+                  <ArrowLeft size={16} />
+                  返回上级
+                </button>
+              ) : null}
+            </div>
+            {materials.length === 0 ? (
+              <div className="quiet-empty">暂无索引资料</div>
+            ) : browserEntries.length === 0 ? (
+              <div className="quiet-empty">这个文件夹里暂无可显示资料</div>
             ) : (
-            <article key={entry.material.id} className="material-row">
-                <div>
-                  <strong>{entry.material.title}</strong>
-                  <small>{entry.material.path}</small>
-                </div>
-                <div className="material-actions">
-                  <span className={entry.material.status === "indexed" ? "status status-completed" : "status status-failed"}>
-                    {entry.material.status === "indexed"
-                    ? materialIndexLabel(entry.material)
-                    : entry.material.status === "needs_conversion"
-                    ? "待转换"
-                    : entry.material.status === "pending"
-                    ? "待索引"
-                    : entry.material.status}
-                  </span>
-                  <a
-                    className="icon-button"
-                    title="预览 RAG 内容"
-                    aria-label="预览 RAG 内容"
-                    href={`/material-preview?id=${encodeURIComponent(entry.material.id)}`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <Eye size={15} />
-                  </a>
-                  <a className="icon-button" title="新页面打开" aria-label="新页面打开" href={`/viewer?path=${encodeURIComponent(entry.material.path)}`} target="_blank" rel="noreferrer">
-                    <ExternalLink size={15} />
-                  </a>
-                  <button
-                    className="icon-button danger-icon"
-                    disabled={busy}
-                    title="删除资料"
-                    aria-label="删除资料"
-                    onClick={() => deleteMaterial(entry.material)}
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              </article>
-            )
-          ))
-        )}
-      </section>
+              browserEntries.map((entry) => (
+                entry.kind === "folder" ? (
+                  <article key={`folder-${entry.path}`} className="material-row material-folder">
+                    <div>
+                      <button className="material-folder-open" onClick={() => setCurrentPath(entry.path)}>
+                        <FolderOpen size={17} />
+                        <span>{entry.name}</span>
+                      </button>
+                      <small>{entry.count} 个文件</small>
+                    </div>
+                    <div className="material-actions">
+                      <button className="icon-button" title="打开文件夹" aria-label="打开文件夹" onClick={() => setCurrentPath(entry.path)}>
+                        <ChevronRight size={18} />
+                      </button>
+                      <button
+                        className="icon-button danger-icon"
+                        disabled={busy}
+                        title="删除文件夹"
+                        aria-label="删除文件夹"
+                        onClick={() => deleteMaterialFolder(entry)}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  </article>
+                ) : (
+                <article key={entry.material.id} className="material-row">
+                    <div>
+                      <strong>{entry.material.title}</strong>
+                      <small>{entry.material.path}</small>
+                    </div>
+                    <div className="material-actions">
+                      <span className={entry.material.status === "indexed" ? "status status-completed" : "status status-failed"}>
+                        {entry.material.status === "indexed"
+                        ? materialIndexLabel(entry.material)
+                        : entry.material.status === "needs_conversion"
+                        ? "待转换"
+                        : entry.material.status === "pending"
+                        ? "待索引"
+                        : entry.material.status}
+                      </span>
+                      <a
+                        className="icon-button"
+                        title="预览 RAG 内容"
+                        aria-label="预览 RAG 内容"
+                        href={`/material-preview?id=${encodeURIComponent(entry.material.id)}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <Eye size={15} />
+                      </a>
+                      <a className="icon-button" title="新页面打开" aria-label="新页面打开" href={`/viewer?path=${encodeURIComponent(entry.material.path)}`} target="_blank" rel="noreferrer">
+                        <ExternalLink size={15} />
+                      </a>
+                      <button
+                        className="icon-button danger-icon"
+                        disabled={busy}
+                        title="删除资料"
+                        aria-label="删除资料"
+                        onClick={() => deleteMaterial(entry.material)}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  </article>
+                )
+              ))
+            )}
+          </section>
+        </section>
+      </div>
     </section>
   );
 }

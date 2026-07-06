@@ -208,14 +208,45 @@ Keep `课堂课件.pdf` for the visible knowledge-point display, problem stateme
 
 ### Accurate visuals
 
-Use deterministic rendering first:
+Use deterministic, coordinate-driven rendering first:
 
-- Geometry diagrams: TikZ or another precise programmatic drawing method.
+- Geometry diagrams: TikZ, Asymptote, or another precise TeX-compatible programmatic drawing method. For solid geometry, prefer Asymptote when available; otherwise use a TikZ fixed oblique projection from explicit 3D coordinates.
 - Function plots and coordinate systems: TikZ, pgfplots, or a programmatic plot.
 - Statistical charts and tables: LaTeX or programmatic drawing.
 - Existing source figures: preserve or crop when legible and permitted.
 
 If a problem is naturally diagram-based or graph-based, the classroom PDF must include the diagram. Do not omit drawable figures to save time. For geometry, function images, coordinate systems, vectors, complex-plane diagrams, probability/statistical charts, or tables, draw or typeset them in LaTeX next to the problem statement whenever the visual is relevant to solving the problem.
+
+### Geometry Perspective Standard
+
+For solid geometry, the diagram is part of the mathematics, not decoration. A diagram that has wrong perspective, inconsistent parallelism, unclear occlusion, cramped labels, or approximate point placement is not acceptable even if the text is correct.
+
+Build every solid-geometry diagram from a defined coordinate or projection model:
+
+- First assign 3D coordinates to the real points or define a consistent oblique projection basis, then project to the page. Do not place vertices by eye.
+- All edges that are parallel in the solid must remain parallel in the drawing unless the diagram intentionally uses a clearly defined perspective projection. For ordinary classroom handouts, prefer stable oblique projection because it preserves parallelism and is easier for students to annotate.
+- Points defined as midpoints, moving points on a segment, feet of perpendiculars, intersections, centers, or section vertices must be computed from the coordinates or stated ratio, not visually guessed.
+- Perpendicular, equal-length, midpoint, parallel, coplanar, and incidence relations required by the problem must be visually compatible with the drawing and mathematically recorded in `_work/课件生成计划.md` or `_work/答案核对表.md`.
+
+Use a clear visual hierarchy:
+
+- Visible edges and the main problem lines use solid lines with the strongest weight.
+- Hidden edges use dashed lines, and only when the hidden/visible distinction helps the student read the solid. Do not use dashed lines for every auxiliary relation.
+- Auxiliary construction lines, coordinate axes, normals, projections, and section lines must be visually lighter or in a second small diagram.
+- Key planes, sections, bases, and faces may use light gray fills or transparent hatching, but never heavy decorative color. Plane fills must be light enough that they do not hide main lines, moving points, labels, or target objects.
+- Labels must not sit on lines, overlap other labels, or touch the page boundary. Move labels with anchors and offsets until they are readable.
+
+Size and composition rules:
+
+- A simple geometry diagram should normally occupy at least 45% of the text width. A complex solid-geometry diagram should normally occupy at least 55% of the text width or be split into two diagrams.
+- If one diagram becomes crowded, split it into `原图` and `建系/向量示意图`, or `原图` and `截面/投影图`. Do not squeeze all vertices, planes, normals, and auxiliary lines into one small picture.
+- Leave enough space around the diagram for tablet annotation; do not put the diagram so low or so small that writing must happen over labels.
+
+QA for solid-geometry figures:
+
+- Render every PDF page that contains a geometry figure.
+- Inspect whether parallel edges look parallel, hidden edges are plausible, labels are legible, the intended plane/line/point is immediately identifiable, and the drawing matches the problem statement.
+- If the figure fails any of these checks, revise the TikZ coordinates or split the figure and recompile. Do not accept a figure merely because it compiled.
 
 Use image generation only for a genuinely necessary complex situational image, spatial illustration, or hard-to-redraw problem visual. When it is needed, follow the installed `imagegen` skill and use the built-in image generation tool by default. Do not generate decorative images. Do not ask an image model to draw exact geometry, axes, measurements, formulas, or answer text. Validate every generated image before embedding it and mark it as a generated illustration in the teacher script.
 
