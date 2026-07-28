@@ -1,0 +1,17 @@
+{
+  "bundle": "netease-finance-topic-ops",
+  "bundle_version": "1.2.0-portable",
+  "bundled_skills": [
+    {"name": "mx-finance-search", "version": "1.0.9", "credential": "EM_API_KEY"},
+    {"name": "tencent-news", "version": "1.1.0", "credential": "Tencent News API Key via CLI"},
+    {"name": "wechat-article-search", "version": "local snapshot", "credential": null},
+    {"name": "news-aggregator-skill", "version": "local snapshot", "credential": null},
+    {"name": "toutiao-news-trends", "version": "local snapshot", "credential": null},
+    {"name": "a-stock-analysis", "version": "1.0.0", "credential": null}
+  ],
+  "product_managed_dependencies": [
+    "Codex Desktop workspace dependency loader",
+    "@oai/artifact-tool"
+  ],
+  "secrets_in_bundle": false
+}

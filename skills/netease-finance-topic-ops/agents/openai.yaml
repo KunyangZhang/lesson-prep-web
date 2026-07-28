@@ -1,0 +1,4 @@
+interface:
+  display_name: "网易财经自动选题运营"
+  short_description: "搜索四天内百条资料，以S级信源完成至少四条选题并生成Word"
+  default_prompt: "使用 $netease-finance-topic-ops 搜索四天内至少100条资料，以S级信源核验并完成至少4条选题；无论是否达标都生成末尾集中列出信息来源的Word。"

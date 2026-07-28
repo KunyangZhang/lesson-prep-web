@@ -1,0 +1,41 @@
+{
+  "bundle_format": 2,
+  "parent_skill": "netease-finance-topic-ops",
+  "bundled_skills": [
+    "mx-finance-search",
+    "tencent-news",
+    "wechat-article-search",
+    "news-aggregator-skill",
+    "toutiao-news-trends",
+    "a-stock-analysis"
+  ],
+  "required_api_keys_for_full_coverage": [
+    {
+      "name": "EM_API_KEY",
+      "storage": "environment variable",
+      "provider": "Eastmoney MX Finance"
+    },
+    {
+      "name": "Tencent News API Key",
+      "storage": "official tencent-news-cli credential store",
+      "provider": "Tencent News"
+    }
+  ],
+  "codex_runtime_components": [
+    "workspace dependency loader",
+    "@oai/artifact-tool"
+  ],
+  "startup_policy": {
+    "entrypoint": "scripts/ensure_ready.py",
+    "repair_before_run": true,
+    "strict_preflight_required": true
+  },
+  "excluded_sensitive_data": [
+    "API key values",
+    "cookies",
+    "accounts",
+    "local databases",
+    "node_modules",
+    "Python virtual environments"
+  ]
+}
