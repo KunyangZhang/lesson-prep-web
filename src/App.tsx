@@ -11,6 +11,7 @@ import {
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
+  ClipboardCheck,
   Download,
   ArrowLeft,
   ExternalLink,
@@ -39,9 +40,25 @@ import {
   UserRound
 } from "lucide-react";
 import { api } from "./api";
-import type { Course, CourseFile, Diagnostics, DiagnosticStatus, Job, Material, RagQuestionRecord, RagReindexJob, RagSearchResult, RagSourceKind, Student, SystemInfo, User } from "./types";
+import type {
+  Course,
+  CourseFile,
+  CoursePostClassSummary,
+  Diagnostics,
+  DiagnosticStatus,
+  Job,
+  Material,
+  RagQuestionRecord,
+  RagReindexJob,
+  RagSearchResult,
+  RagSourceKind,
+  Student,
+  SystemInfo,
+  User
+} from "./types";
 
 type View = "students" | "materials";
+type CourseDetailTab = "preview" | "workflow" | "postClass" | "activity";
 
 interface AiLessonDraft {
   student: Student;
@@ -56,6 +73,7 @@ interface AiDraftAttachmentItem {
   pages?: number;
   size: number;
   savedPath?: string;
+  retryable?: boolean;
 }
 
 interface AiDraftAttachmentSummary {
@@ -67,6 +85,16 @@ interface AiDraftAttachmentSummary {
 interface AiDraftContinueState {
   logPath: string;
   message: string;
+}
+
+interface AiDraftStudentForm {
+  name: string;
+  stage: string;
+  notes: string;
+  weakPoints: string;
+  commonMistakes: string;
+  parentNotes: string;
+  nextLessonSuggestion: string;
 }
 
 interface SessionState {
@@ -91,34 +119,161 @@ const emptyCourseForm = {
   autoRun: true
 };
 
-const emptyAiInput = [
-  "学生：",
-  "年级：",
-  "分数/水平：",
-  "课程类型：正式课",
-  "课长：90分钟",
-  "家长/老师沟通：",
-  "学生原题/错题：",
-  "老师判断：",
-  "本次备课要求：",
-  "资料路径：",
-  "其他："
-].join("\n");
+interface AiDraftPersistedState {
+  version: 1;
+  savedAt: string;
+  input: string;
+  draft: AiLessonDraft | null;
+  studentForm: AiDraftStudentForm;
+  courseForm: typeof emptyCourseForm;
+  attachmentSummary: AiDraftAttachmentSummary | null;
+  uploadMessage: string;
+  draftContinue: AiDraftContinueState | null;
+  pendingFiles: Array<{ name: string; size: number }>;
+  serverRecoveryLogPath?: string;
+}
+
+interface AiDraftServerRecovery {
+  draft: AiLessonDraft;
+  attachments: AiDraftAttachmentSummary;
+  logPath: string;
+  completedAt: string;
+}
+
+const aiDraftStorageVersion = 1;
+
+function aiDraftStorageKey(studentId: string) {
+  return `lesson-prep:ai-draft:v${aiDraftStorageVersion}:${studentId}`;
+}
+
+function aiDraftIgnoredServerLogKey(studentId: string) {
+  return `lesson-prep:ai-draft:ignored-server-log:${studentId}`;
+}
+
+function readPersistedAiDraft(studentId: string): AiDraftPersistedState | null {
+  try {
+    const value = window.localStorage.getItem(aiDraftStorageKey(studentId));
+    if (!value) return null;
+    const parsed = JSON.parse(value) as AiDraftPersistedState;
+    return parsed?.version === aiDraftStorageVersion ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function removePersistedAiDraft(studentId: string) {
+  try {
+    window.localStorage.removeItem(aiDraftStorageKey(studentId));
+  } catch {
+    // The in-memory draft can still be submitted or cleared when storage is unavailable.
+  }
+}
+
+function formatAiDraftSavedAt(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "此前";
+  return date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
 
 const folderPickerProps = { webkitdirectory: "", directory: "" };
 const agentWorkFiles = [
+  { paths: ["_work/连续学习档案.md"], label: "连续学习" },
   { paths: ["_work/题目提取.md", "_work/题目索引.md"], label: "题目提取" },
   { paths: ["_work/答案核对表.md"], label: "答案核对" },
-  { paths: ["_work/课件生成计划.md", "_work/课件页码映射.md"], label: "课件生成" },
+  { paths: ["_work/课件生成计划.md", "_work/课件页码映射.md", "_work/授课一体版页码映射.md"], label: "课件生成" },
   { paths: ["_work/逐字稿丰富清单.md", "_work/内容丰富清单.md"], label: "逐字稿丰富" }
 ];
 
 function useInterval(callback: () => void, delay: number | null) {
+  const savedCallback = useRef(callback);
+
+  useEffect(() => {
+    savedCallback.current = callback;
+  }, [callback]);
+
   useEffect(() => {
     if (delay === null) return;
-    const timer = window.setInterval(callback, delay);
+    const timer = window.setInterval(() => savedCallback.current(), delay);
     return () => window.clearInterval(timer);
-  }, [callback, delay]);
+  }, [delay]);
+}
+
+function sameJsonList<T>(current: T[], next: T[]) {
+  if (current.length !== next.length) return false;
+  return current.every((item, index) => JSON.stringify(item) === JSON.stringify(next[index]));
+}
+
+function sameCourseFileList(current: CourseFile[], next: CourseFile[]) {
+  if (current.length !== next.length) return false;
+  return current.every((file, index) => {
+    const nextFile = next[index];
+    return (
+      file.name === nextFile.name &&
+      file.path === nextFile.path &&
+      file.relativePath === nextFile.relativePath &&
+      file.kind === nextFile.kind &&
+      file.size === nextFile.size &&
+      file.updatedAt === nextFile.updatedAt
+    );
+  });
+}
+
+function normalizedCourseFilePath(file: CourseFile) {
+  return file.relativePath.replace(/\\/g, "/");
+}
+
+function isRootCourseFile(file: CourseFile) {
+  return !normalizedCourseFilePath(file).includes("/");
+}
+
+function isHomeworkAnswerFile(file: CourseFile) {
+  return file.kind === "pdf" && file.name.includes("课后作业") && file.name.includes("答案");
+}
+
+function isHomeworkFile(file: CourseFile) {
+  return file.kind === "pdf" && file.name.includes("课后作业") && !file.name.includes("答案");
+}
+
+function courseOutputRank(file: CourseFile) {
+  if (file.kind === "pdf" && file.name.includes("授课一体版") && isRootCourseFile(file)) return 0;
+  if (file.kind === "pdf" && isRootCourseFile(file) && !isHomeworkFile(file) && !isHomeworkAnswerFile(file)) return 1;
+  if (isHomeworkFile(file)) return 2;
+  if (isHomeworkAnswerFile(file)) return 3;
+  if (file.name === "老师逐字稿.md") return 4;
+  if (file.name === "知识点详解.md") return 5;
+  if (file.name === "课后反馈.md") return 6;
+  return 20;
+}
+
+function courseOutputFiles(files: CourseFile[]) {
+  const rootFiles = files.filter((file) => isRootCourseFile(file));
+  const newest = (candidates: CourseFile[]) =>
+    [...candidates].sort((a, b) => Date.parse(b.updatedAt || "") - Date.parse(a.updatedAt || ""))[0];
+  const teachingPdf = newest(rootFiles.filter((file) => file.kind === "pdf" && file.name.includes("授课一体版")));
+  const studentPdf = newest(
+    rootFiles.filter(
+      (file) => file.kind === "pdf" && !file.name.includes("授课一体版") && !isHomeworkFile(file) && !isHomeworkAnswerFile(file)
+    )
+  );
+  const homeworkPdf = newest(rootFiles.filter(isHomeworkFile));
+  const homeworkAnswerPdf = newest(rootFiles.filter(isHomeworkAnswerFile));
+  const markdownFiles = rootFiles.filter((file) => ["老师逐字稿.md", "知识点详解.md", "课后反馈.md"].includes(file.name));
+
+  return [teachingPdf, studentPdf, homeworkPdf, homeworkAnswerPdf, ...markdownFiles]
+    .filter((file): file is CourseFile => Boolean(file))
+    .sort((a, b) => courseOutputRank(a) - courseOutputRank(b) || a.name.localeCompare(b.name, "zh-CN"));
+}
+
+function preferredCourseOutputFile(files: CourseFile[]) {
+  return files.find((file) => file.kind === "pdf") || files[0] || null;
+}
+
+function courseFileKindLabel(file: CourseFile) {
+  if (file.kind === "pdf" && file.name.includes("授课一体版")) return "教师授课一体版";
+  if (isHomeworkAnswerFile(file)) return "课后作业参考答案";
+  if (isHomeworkFile(file)) return "学生课后作业";
+  if (file.kind === "pdf" && isRootCourseFile(file)) return "学生课堂讲义";
+  return file.kind;
 }
 
 function formatDate(value?: string) {
@@ -134,6 +289,10 @@ function formatDate(value?: string) {
     hour: "2-digit",
     minute: "2-digit"
   });
+}
+
+function compactText(value = "", maxLength = 90) {
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 }
 
 function toDatetimeLocalValue(value?: string) {
@@ -156,6 +315,79 @@ function statusLabel(status: Course["status"] | Job["status"]) {
     canceled: "已取消"
   };
   return map[status];
+}
+
+function feishuNotificationLabel(status?: NonNullable<Course["feishuSync"]>["notificationStatus"]) {
+  if (status === "sent") return "已发送";
+  if (status === "failed") return "发送失败";
+  if (status === "skipped") return "已跳过";
+  return "未记录";
+}
+
+const emptyPostClassSummary: CoursePostClassSummary = {
+  status: "draft",
+  linkedPrevious: "",
+  learned: "",
+  mastered: "",
+  unresolved: "",
+  commonMistakes: "",
+  homework: "",
+  nextLessonSuggestion: "",
+  teacherNotes: ""
+};
+
+function courseTimelineValue(course: Course) {
+  return Date.parse(course.lessonTime || course.createdAt || course.updatedAt || "") || 0;
+}
+
+function sortCoursesByTimelineDesc(courses: Course[]) {
+  return [...courses].sort((a, b) => courseTimelineValue(b) - courseTimelineValue(a) || b.createdAt.localeCompare(a.createdAt));
+}
+
+function sortCoursesByTimelineAsc(courses: Course[]) {
+  return [...courses].sort((a, b) => courseTimelineValue(a) - courseTimelineValue(b) || a.createdAt.localeCompare(b.createdAt));
+}
+
+function postClassHasContent(summary?: CoursePostClassSummary) {
+  if (!summary) return false;
+  return Boolean(
+    summary.linkedPrevious ||
+      summary.learned ||
+      summary.mastered ||
+      summary.unresolved ||
+      summary.commonMistakes ||
+      summary.homework ||
+      summary.nextLessonSuggestion ||
+      summary.teacherNotes
+  );
+}
+
+function postClassStateLabel(course: Course) {
+  if (course.postClassSummary?.status === "confirmed") return "课后已确认";
+  if (postClassHasContent(course.postClassSummary)) return "课后草稿";
+  if (course.status === "completed") return "课后待确认";
+  return "课后待生成";
+}
+
+function buildAiLessonInput(student: Student) {
+  return [
+    `学生：${student.name}`,
+    `年级：${student.stage || ""}`,
+    "分数/水平：",
+    "课程类型：正式课",
+    "课长：90分钟",
+    `学生薄弱点：${student.weakPoints || ""}`,
+    `常错题型：${student.commonMistakes || ""}`,
+    `家长/老师沟通：${student.parentNotes || ""}`,
+    `上次课建议：${student.nextLessonSuggestion || ""}`,
+    `连续学习记忆：${student.learningMemory || ""}`,
+    `长期路线图：${student.learningRoadmap || ""}`,
+    "学生原题/错题：",
+    "老师判断：",
+    "本次备课要求：",
+    "资料路径：",
+    "其他："
+  ].join("\n");
 }
 
 function statusClass(status: Course["status"] | Job["status"]) {
@@ -391,7 +623,7 @@ export default function App() {
       return;
     }
     const data = await api.get<{ courses: Course[] }>(`/api/students/${studentId}/courses`);
-    setCourses(data.courses);
+    setCourses((current) => (sameJsonList(current, data.courses) ? current : data.courses));
     setSelectedCourseId((current) => {
       if (current && data.courses.some((course) => course.id === current)) return current;
       return data.courses[0]?.id || "";
@@ -536,12 +768,13 @@ export default function App() {
               setView("students");
             }}
             onCreated={async (course) => {
+              await loadStudents();
               await loadCourses(course.studentId);
               setSelectedCourseId(course.id);
             }}
-            onRefresh={() => {
+            onRefresh={async () => {
               if (selectedStudentId) {
-                return loadCourses(selectedStudentId);
+                await Promise.all([loadStudents(), loadCourses(selectedStudentId)]);
               }
             }}
             onStudentSaved={async () => {
@@ -551,7 +784,7 @@ export default function App() {
             onDeleteCourse={async (course) => {
               if (!window.confirm(`删除课程「${course.desiredContent || "未命名课程"}」？已生成文件会保留。`)) return;
               await api.del(`/api/courses/${course.id}`);
-              await loadCourses(course.studentId);
+              await Promise.all([loadStudents(), loadCourses(course.studentId)]);
             }}
             onDeleteStudent={async (student) => {
               if (!window.confirm(`删除学生「${student.name}」？课程记录会从网页移除，但已生成文件会保留。`)) return;
@@ -934,10 +1167,11 @@ function StudentWorkspace({
 }) {
   const [showForm, setShowForm] = useState(false);
   const [showAiDraft, setShowAiDraft] = useState(false);
+  const orderedCourses = useMemo(() => sortCoursesByTimelineDesc(courses), [courses]);
 
   return (
-    <div className="student-workspace studio-shell">
-      <section className="student-switcher-panel">
+    <div className="student-workspace command-layout">
+      <section className="student-roster-panel">
         <div className="source-head">
           <div>
             <p className="eyebrow">学生库</p>
@@ -945,10 +1179,8 @@ function StudentWorkspace({
           </div>
           <span>{students.length}</span>
         </div>
-        <div className="student-switcher-actions">
-          <CreateStudentForm onCreated={onCreateStudent} onError={onError} />
-        </div>
-        <div className="student-switcher-list">
+        <CreateStudentForm onCreated={onCreateStudent} onError={onError} />
+        <div className="student-roster-list">
           {students.map((item) => (
             <div key={item.id} className={item.id === selectedStudentId ? "student-chip active" : "student-chip"}>
               <button className="student-source-main" onClick={() => onSelectStudent(item.id)}>
@@ -971,109 +1203,126 @@ function StudentWorkspace({
         </div>
       </section>
 
-      <section className="studio-main">
-        {student ? (
-          <>
-            <section className="student-plan-column">
-              <header className="planner-header">
-                <div>
-                  <p className="eyebrow">备课台</p>
-                  <h2>{student.name}</h2>
-                  <span>{student.stage || "未设置学段"}</span>
-                </div>
-                <div className="header-actions">
-                  <button className="ghost-button" onClick={() => onRefresh()}>
-                    <RefreshCcw size={16} />
-                    刷新
-                  </button>
-                  <button className="ghost-button" onClick={() => setShowAiDraft((value) => !value)}>
-                    <Sparkles size={17} />
-                    AI 草稿
-                  </button>
-                  <button className="primary-button" onClick={() => setShowForm((value) => !value)}>
-                    <Plus size={17} />
-                    新建课程
-                  </button>
-                </div>
-              </header>
+      {student ? (
+        <>
+          <section className="student-command-panel">
+            <header className="planner-header command-planner-header">
+              <div>
+                <p className="eyebrow">备课台</p>
+                <h2>{student.name}</h2>
+                <span>{student.stage || "未设置学段"}</span>
+              </div>
+              <div className="header-actions">
+                <button className="ghost-button" onClick={() => onRefresh()}>
+                  <RefreshCcw size={16} />
+                  刷新
+                </button>
+                <button className="ghost-button" onClick={() => setShowAiDraft((value) => !value)}>
+                  <Sparkles size={17} />
+                  AI 草稿
+                </button>
+                <button className="primary-button" onClick={() => setShowForm((value) => !value)}>
+                  <Plus size={17} />
+                  新建课程
+                </button>
+              </div>
+            </header>
 
-              {showAiDraft || showForm ? (
-                <section className="workspace-drawer">
-                  {showAiDraft ? (
-                    <AiLessonDraftPanel
-                      initialStudent={student}
-                      onCreated={async (course) => {
-                        setShowAiDraft(false);
-                        onCreated(course);
-                      }}
-                      onError={onError}
-                    />
-                  ) : null}
+            {showAiDraft || showForm ? (
+              <section className="workspace-drawer">
+                {showAiDraft ? (
+                  <AiLessonDraftPanel
+                    key={student.id}
+                    initialStudent={student}
+                    onCreated={async (course) => {
+                      setShowAiDraft(false);
+                      onCreated(course);
+                    }}
+                    onError={onError}
+                  />
+                ) : null}
 
-                  {showForm ? (
-                    <CourseForm
-                      student={student}
-                      onCreated={(course) => {
-                        setShowForm(false);
-                        onCreated(course);
-                      }}
-                      onError={onError}
-                    />
-                  ) : null}
-                </section>
-              ) : null}
-
-              <StudentProfilePanel student={student} onSaved={onStudentSaved} onError={onError} />
-
-              <StudentDossierPanel student={student} courses={courses} />
-
-              <section className="course-board">
-                <div className="section-title">
-                  <div>
-                    <strong>课程队列</strong>
-                    <small>{courses.length} 节课程</small>
-                  </div>
-                  <FolderOpen size={18} />
-                </div>
-                {courses.length === 0 ? (
-                  <div className="quiet-empty">暂无课程</div>
-                ) : (
-                  <div className="course-list">
-                    {courses.map((course) => (
-                      <div key={course.id} className={course.id === selectedCourse?.id ? "course-item active" : "course-item"}>
-                        <button className="course-select" onClick={() => onSelectCourse(course.id)}>
-                          <span className={statusClass(course.status)}>{statusLabel(course.status)}</span>
-                          <strong>{course.desiredContent || "未命名课程"}</strong>
-                          <small>
-                            {course.type === "trial" ? "试听课" : "正式课"} · {course.grade || "年级待填"} · {formatDate(course.lessonTime)}
-                          </small>
-                        </button>
-                        <button
-                          className="icon-button danger-icon"
-                          title="删除课程"
-                          aria-label="删除课程"
-                          onClick={() => onDeleteCourse(course).catch((err) => onError(err.message))}
-                        >
-                          <Trash2 size={15} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                {showForm ? (
+                  <CourseForm
+                    student={student}
+                    onCreated={(course) => {
+                      setShowForm(false);
+                      onCreated(course);
+                    }}
+                    onError={onError}
+                  />
+                ) : null}
               </section>
-            </section>
+            ) : null}
 
-            <section className="course-stage-panel">
-              <CourseDetail student={student} course={selectedCourse} onRefresh={onRefresh} onDeleteCourse={onDeleteCourse} onError={onError} />
+            <StudentDossierPanel student={student} courses={orderedCourses} onSelectCourse={onSelectCourse} />
+
+            <details className="profile-disclosure">
+              <summary>
+                <span>
+                  <UserRound size={16} />
+                  编辑学生长期档案
+                </span>
+                <ChevronRight size={16} />
+              </summary>
+              <StudentProfilePanel student={student} onSaved={onStudentSaved} onError={onError} />
+            </details>
+
+            <section className="course-board">
+              <div className="section-title">
+                <div>
+                  <strong>课程队列</strong>
+                  <small>{orderedCourses.length} 节课程</small>
+                </div>
+                <FolderOpen size={18} />
+              </div>
+              {orderedCourses.length === 0 ? (
+                <div className="quiet-empty">暂无课程</div>
+              ) : (
+                <div className="course-list">
+                  {orderedCourses.map((course) => (
+                    <div key={course.id} className={course.id === selectedCourse?.id ? "course-item active" : "course-item"}>
+                      <button className="course-select" onClick={() => onSelectCourse(course.id)}>
+                        <span className={statusClass(course.status)}>{statusLabel(course.status)}</span>
+                        <strong>{course.desiredContent || "未命名课程"}</strong>
+                        <small>
+                          {course.type === "trial" ? "试听课" : "正式课"} · {course.grade || "年级待填"} · {formatDate(course.lessonTime)}
+                        </small>
+                        <small className="course-continuity-state">{postClassStateLabel(course)}</small>
+                      </button>
+                      <button
+                        className="icon-button danger-icon"
+                        title="删除课程"
+                        aria-label="删除课程"
+                        onClick={() => onDeleteCourse(course).catch((err) => onError(err.message))}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
-          </>
-        ) : (
-          <section className="empty-state planner-empty">
-            <UserRound size={28} />
-            <h2>先创建一个学生</h2>
           </section>
-        )}
-      </section>
+
+          <section className="course-stage-panel">
+            <CourseDetail
+              student={student}
+              courses={orderedCourses}
+              course={selectedCourse}
+              onSelectCourse={onSelectCourse}
+              onRefresh={onRefresh}
+              onDeleteCourse={onDeleteCourse}
+              onError={onError}
+            />
+          </section>
+        </>
+      ) : (
+        <section className="empty-state planner-empty">
+          <UserRound size={28} />
+          <h2>先创建一个学生</h2>
+        </section>
+      )}
     </div>
   );
 }
@@ -1091,7 +1340,9 @@ function StudentProfilePanel({
     weakPoints: student.weakPoints || "",
     commonMistakes: student.commonMistakes || "",
     parentNotes: student.parentNotes || "",
-    nextLessonSuggestion: student.nextLessonSuggestion || ""
+    nextLessonSuggestion: student.nextLessonSuggestion || "",
+    learningMemory: student.learningMemory || "",
+    learningRoadmap: student.learningRoadmap || ""
   });
   const [saving, setSaving] = useState(false);
 
@@ -1100,9 +1351,19 @@ function StudentProfilePanel({
       weakPoints: student.weakPoints || "",
       commonMistakes: student.commonMistakes || "",
       parentNotes: student.parentNotes || "",
-      nextLessonSuggestion: student.nextLessonSuggestion || ""
+      nextLessonSuggestion: student.nextLessonSuggestion || "",
+      learningMemory: student.learningMemory || "",
+      learningRoadmap: student.learningRoadmap || ""
     });
-  }, [student.id, student.weakPoints, student.commonMistakes, student.parentNotes, student.nextLessonSuggestion]);
+  }, [
+    student.id,
+    student.weakPoints,
+    student.commonMistakes,
+    student.parentNotes,
+    student.nextLessonSuggestion,
+    student.learningMemory,
+    student.learningRoadmap
+  ]);
 
   function update(name: keyof typeof form, value: string) {
     setForm((current) => ({ ...current, [name]: value }));
@@ -1170,25 +1431,47 @@ function StudentProfilePanel({
             placeholder="例如：先用 15 分钟复盘错题，再进入新专题"
           />
         </label>
+        <label>
+          连续学习记忆
+          <textarea
+            value={form.learningMemory}
+            onChange={(event) => update("learningMemory", event.target.value)}
+            rows={5}
+            placeholder="系统会在每节课完成后自动沉淀，也可以手动修正"
+          />
+        </label>
+        <label>
+          长期学习路线图
+          <textarea
+            value={form.learningRoadmap}
+            onChange={(event) => update("learningRoadmap", event.target.value)}
+            rows={5}
+            placeholder="例如：第1阶段补基础，第2阶段专题突破，第3阶段综合卷复盘"
+          />
+        </label>
       </div>
     </form>
   );
 }
 
-function StudentDossierPanel({ student, courses }: { student: Student; courses: Course[] }) {
+function StudentDossierPanel({
+  student,
+  courses,
+  onSelectCourse
+}: {
+  student: Student;
+  courses: Course[];
+  onSelectCourse: (id: string) => void;
+}) {
   const completedCourses = courses.filter((course) => course.status === "completed");
   const runningCourses = courses.filter((course) => course.status === "running" || course.status === "queued");
+  const postClassPendingCourses = completedCourses.filter((course) => course.postClassSummary?.status !== "confirmed");
+  const latestConfirmedCourse = sortCoursesByTimelineDesc(completedCourses).find((course) => course.postClassSummary?.status === "confirmed");
   const coveredItems = courses
     .map((course) => course.desiredContent || course.lessonKind || course.grade)
     .filter(Boolean)
     .slice(0, 10);
-  const recentRecords = [...courses]
-    .sort((a, b) => {
-      const left = new Date(a.lessonTime || a.createdAt || 0).getTime();
-      const right = new Date(b.lessonTime || b.createdAt || 0).getTime();
-      return right - left;
-    })
-    .slice(0, 6);
+  const recentRecords = sortCoursesByTimelineDesc(courses).slice(0, 6);
 
   return (
     <section className="student-dossier-panel">
@@ -1215,6 +1498,26 @@ function StudentDossierPanel({ student, courses }: { student: Student; courses: 
         </div>
       </div>
 
+      <div className="dossier-continuity">
+        <div>
+          <span className="dossier-label">最近确认沉淀</span>
+          <strong>{latestConfirmedCourse?.desiredContent || "暂无确认记录"}</strong>
+          <small>{latestConfirmedCourse ? formatDate(latestConfirmedCourse.lessonTime || latestConfirmedCourse.createdAt) : "完成课后确认后会作为下一节课上下文"}</small>
+        </div>
+        <div>
+          <span className="dossier-label">待确认课后</span>
+          <strong>{postClassPendingCourses.length}</strong>
+          <small>{postClassPendingCourses.length > 0 ? "这些课不会自动写入长期档案" : "已完成课程均已沉淀"}</small>
+        </div>
+      </div>
+
+      {postClassPendingCourses.length > 0 ? (
+        <div className="dossier-alert">
+          <ClipboardCheck size={16} />
+          <span>{postClassPendingCourses.length} 节已完成课程还没有确认课后沉淀，下一节课可能缺少真实课堂反馈。</span>
+        </div>
+      ) : null}
+
       <div className="dossier-section">
         <span className="dossier-label">已上/已规划内容</span>
         {coveredItems.length > 0 ? (
@@ -1228,15 +1531,37 @@ function StudentDossierPanel({ student, courses }: { student: Student; courses: 
         )}
       </div>
 
+      {student.learningMemory ? (
+        <div className="dossier-section">
+          <span className="dossier-label">连续学习记忆</span>
+          <small className="dossier-memory">{student.learningMemory}</small>
+        </div>
+      ) : null}
+
+      {student.learningRoadmap ? (
+        <div className="dossier-section">
+          <span className="dossier-label">长期学习路线图</span>
+          <small className="dossier-memory">{student.learningRoadmap}</small>
+        </div>
+      ) : null}
+
       <div className="dossier-section">
         <span className="dossier-label">上课记录</span>
         {recentRecords.length > 0 ? (
           <div className="lesson-timeline">
             {recentRecords.map((course) => (
-              <button key={course.id} type="button" className="lesson-record" title={course.desiredContent || "未命名课程"}>
+              <button
+                key={course.id}
+                type="button"
+                className="lesson-record"
+                title={course.desiredContent || "未命名课程"}
+                onClick={() => onSelectCourse(course.id)}
+              >
                 <span className={statusClass(course.status)}>{statusLabel(course.status)}</span>
                 <strong>{course.desiredContent || "未命名课程"}</strong>
-                <small>{formatDate(course.lessonTime || course.createdAt)} · {course.durationMinutes || 90} 分钟</small>
+                <small>
+                  {formatDate(course.lessonTime || course.createdAt)} · {course.durationMinutes || 90} 分钟 · {postClassStateLabel(course)}
+                </small>
               </button>
             ))}
           </div>
@@ -1382,11 +1707,8 @@ function AiLessonDraftPanel({
   onCreated: (course: Course) => void;
   onError: (message: string) => void;
 }) {
-  const [input, setInput] = useState(() =>
-    emptyAiInput.replace("学生：", `学生：${initialStudent.name}`).replace("年级：", `年级：${initialStudent.stage || ""}`)
-  );
-  const [draft, setDraft] = useState<AiLessonDraft | null>(null);
-  const [studentForm, setStudentForm] = useState({
+  const initialInput = buildAiLessonInput(initialStudent);
+  const initialStudentForm: AiDraftStudentForm = {
     name: initialStudent.name,
     stage: initialStudent.stage || "高中数学",
     notes: initialStudent.notes || "",
@@ -1394,22 +1716,70 @@ function AiLessonDraftPanel({
     commonMistakes: initialStudent.commonMistakes || "",
     parentNotes: initialStudent.parentNotes || "",
     nextLessonSuggestion: initialStudent.nextLessonSuggestion || ""
-  });
-  const [courseForm, setCourseForm] = useState({ ...emptyCourseForm, autoRun: false, stage: initialStudent.stage || emptyCourseForm.stage });
+  };
+  const initialCourseForm = { ...emptyCourseForm, autoRun: false, stage: initialStudent.stage || emptyCourseForm.stage };
+  const recoveredDraft = useMemo(() => readPersistedAiDraft(initialStudent.id), [initialStudent.id]);
+  const [input, setInput] = useState(() => recoveredDraft?.input ?? initialInput);
+  const [draft, setDraft] = useState<AiLessonDraft | null>(() => recoveredDraft?.draft ?? null);
+  const [studentForm, setStudentForm] = useState<AiDraftStudentForm>(() => recoveredDraft?.studentForm ?? initialStudentForm);
+  const [courseForm, setCourseForm] = useState(() => ({ ...initialCourseForm, ...recoveredDraft?.courseForm, autoRun: false }));
   const [draftFiles, setDraftFiles] = useState<File[]>([]);
-  const [attachmentSummary, setAttachmentSummary] = useState<AiDraftAttachmentSummary | null>(null);
-  const [uploadMessage, setUploadMessage] = useState("");
-  const [draftContinue, setDraftContinue] = useState<AiDraftContinueState | null>(null);
+  const [unrestoredFiles, setUnrestoredFiles] = useState(() => recoveredDraft?.pendingFiles ?? []);
+  const [attachmentSummary, setAttachmentSummary] = useState<AiDraftAttachmentSummary | null>(() => recoveredDraft?.attachmentSummary ?? null);
+  const [uploadMessage, setUploadMessage] = useState(() => recoveredDraft?.uploadMessage ?? "");
+  const [draftContinue, setDraftContinue] = useState<AiDraftContinueState | null>(() => recoveredDraft?.draftContinue ?? null);
+  const [serverRecoveryLogPath, setServerRecoveryLogPath] = useState(recoveredDraft?.serverRecoveryLogPath ?? "");
+  const [draftDirty, setDraftDirty] = useState(Boolean(recoveredDraft));
+  const [lastAutoSavedAt, setLastAutoSavedAt] = useState(recoveredDraft?.savedAt ?? "");
+  const [recoveryMessage, setRecoveryMessage] = useState(() => {
+    if (!recoveredDraft) return "";
+    const pendingMessage = recoveredDraft.pendingFiles.length > 0
+      ? `；上次选择的 ${recoveredDraft.pendingFiles.length} 个本地文件需重新选择`
+      : "";
+    return `已恢复 ${formatAiDraftSavedAt(recoveredDraft.savedAt)} 自动保存的草稿${pendingMessage}。`;
+  });
   const [generating, setGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [retryingOcrPath, setRetryingOcrPath] = useState("");
   const draftFileInputRef = useRef<HTMLInputElement | null>(null);
   const draftImageInputRef = useRef<HTMLInputElement | null>(null);
 
+  useEffect(() => {
+    if (!draftDirty || generating || saving) return undefined;
+    const savedAt = new Date().toISOString();
+    const pendingFiles = [
+      ...unrestoredFiles,
+      ...draftFiles.map((file) => ({ name: file.name, size: file.size }))
+    ];
+    const persisted: AiDraftPersistedState = {
+      version: aiDraftStorageVersion,
+      savedAt,
+      input,
+      draft,
+      studentForm,
+      courseForm,
+      attachmentSummary,
+      uploadMessage,
+      draftContinue,
+      pendingFiles,
+      serverRecoveryLogPath
+    };
+    try {
+      window.localStorage.setItem(aiDraftStorageKey(initialStudent.id), JSON.stringify(persisted));
+      setLastAutoSavedAt(savedAt);
+    } catch {
+      setRecoveryMessage("浏览器未能保存草稿，请暂时不要关闭此页面。");
+    }
+    return undefined;
+  }, [attachmentSummary, courseForm, draft, draftContinue, draftDirty, draftFiles, generating, initialStudent.id, input, saving, serverRecoveryLogPath, studentForm, unrestoredFiles, uploadMessage]);
+
   function updateStudent(name: string, value: string) {
+    setDraftDirty(true);
     setStudentForm((current) => ({ ...current, [name]: value }));
   }
 
   function updateCourse(name: string, value: string | number) {
+    setDraftDirty(true);
     setCourseForm((current) => ({ ...current, [name]: value }));
   }
 
@@ -1419,6 +1789,9 @@ function AiLessonDraftPanel({
       setUploadMessage("没有读取到选择的文件，请重新选择。");
       return;
     }
+    setDraftDirty(true);
+    setUnrestoredFiles([]);
+    setRecoveryMessage("");
     setDraftFiles((current) => [...current, ...selectedFiles]);
     setAttachmentSummary(null);
     setUploadMessage(`已选择 ${selectedFiles.length} 个文件，生成草稿时会一起上传。`);
@@ -1426,6 +1799,7 @@ function AiLessonDraftPanel({
   }
 
   function applyDraftData(data: { draft: AiLessonDraft; attachments?: AiDraftAttachmentSummary }) {
+    setDraftDirty(true);
     if (data.attachments) setAttachmentSummary(data.attachments);
     setUploadMessage(
       data.attachments && data.attachments.fileCount > 0
@@ -1460,8 +1834,45 @@ function AiLessonDraftPanel({
     setDraftContinue(null);
   }
 
+  useEffect(() => {
+    if (recoveredDraft?.draft) return undefined;
+    let canceled = false;
+    api
+      .get<{ recovery: AiDraftServerRecovery | null }>(`/api/ai-drafts/lesson/recovery?studentId=${encodeURIComponent(initialStudent.id)}`)
+      .then(({ recovery }) => {
+        if (canceled || !recovery) return;
+        let ignoredLogPath = "";
+        try {
+          ignoredLogPath = window.localStorage.getItem(aiDraftIgnoredServerLogKey(initialStudent.id)) || "";
+        } catch {
+          ignoredLogPath = "";
+        }
+        if (ignoredLogPath === recovery.logPath) return;
+        const recoveredFileNames = new Set(recovery.attachments.items.map((item) => item.name));
+        const matchesPendingUpload = Boolean(
+          recoveredDraft?.pendingFiles.length &&
+          recoveredDraft.pendingFiles.every((file) => recoveredFileNames.has(file.name))
+        );
+        if (
+          recoveredDraft?.savedAt &&
+          Date.parse(recovery.completedAt) <= Date.parse(recoveredDraft.savedAt) &&
+          !matchesPendingUpload
+        ) return;
+        applyDraftData(recovery);
+        setDraftFiles([]);
+        setUnrestoredFiles([]);
+        setServerRecoveryLogPath(recovery.logPath);
+        setRecoveryMessage(`已自动恢复服务端 ${formatAiDraftSavedAt(recovery.completedAt)} 完成的 AI 草稿，无需重新上传 PDF。`);
+      })
+      .catch(() => undefined);
+    return () => {
+      canceled = true;
+    };
+  }, [initialStudent.id, recoveredDraft]);
+
   async function generateDraft(event: React.FormEvent) {
     event.preventDefault();
+    setDraftDirty(true);
     setGenerating(true);
     setAttachmentSummary(null);
     setUploadMessage(draftFiles.length > 0 ? `正在上传并分析 ${draftFiles.length} 个文件...` : "");
@@ -1507,6 +1918,38 @@ function AiLessonDraftPanel({
     }
   }
 
+  async function retryAttachmentOcr(item: AiDraftAttachmentItem) {
+    if (!item.savedPath || retryingOcrPath) return;
+    setRetryingOcrPath(item.savedPath);
+    setAttachmentSummary((current) => current ? {
+      ...current,
+      items: current.items.map((candidate) => candidate.savedPath === item.savedPath
+        ? { ...candidate, message: "正在重新提交 PaddleOCR..." }
+        : candidate)
+    } : current);
+    try {
+      const data = await api.post<{ item: AiDraftAttachmentItem }>("/api/ai-drafts/lesson/attachments/ocr-retry", {
+        studentId: initialStudent.id,
+        savedPath: item.savedPath
+      });
+      setAttachmentSummary((current) => current ? {
+        ...current,
+        items: current.items.map((candidate) => candidate.savedPath === item.savedPath ? data.item : candidate)
+      } : current);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setAttachmentSummary((current) => current ? {
+        ...current,
+        items: current.items.map((candidate) => candidate.savedPath === item.savedPath
+          ? { ...candidate, status: "warn", message: `OCR 重试失败：${message}`, retryable: true }
+          : candidate)
+      } : current);
+      onError(message);
+    } finally {
+      setRetryingOcrPath("");
+    }
+  }
+
   async function saveDraft() {
     setSaving(true);
     try {
@@ -1515,12 +1958,45 @@ function AiLessonDraftPanel({
         student: studentForm,
         course: courseForm
       });
+      removePersistedAiDraft(initialStudent.id);
+      if (serverRecoveryLogPath) {
+        try {
+          window.localStorage.setItem(aiDraftIgnoredServerLogKey(initialStudent.id), serverRecoveryLogPath);
+        } catch {
+          // The committed course is already stored on the server.
+        }
+      }
       onCreated(data.course);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
     }
+  }
+
+  function clearDraft() {
+    if (!window.confirm("确定清空这个学生的 AI 草稿吗？清空后无法自动恢复。")) return;
+    removePersistedAiDraft(initialStudent.id);
+    if (serverRecoveryLogPath) {
+      try {
+        window.localStorage.setItem(aiDraftIgnoredServerLogKey(initialStudent.id), serverRecoveryLogPath);
+      } catch {
+        // Clearing the visible draft still works when storage is unavailable.
+      }
+    }
+    setInput(initialInput);
+    setDraft(null);
+    setStudentForm(initialStudentForm);
+    setCourseForm(initialCourseForm);
+    setDraftFiles([]);
+    setUnrestoredFiles([]);
+    setAttachmentSummary(null);
+    setUploadMessage("");
+    setDraftContinue(null);
+    setServerRecoveryLogPath("");
+    setLastAutoSavedAt("");
+    setRecoveryMessage("草稿已清空。");
+    setDraftDirty(false);
   }
 
   return (
@@ -1531,11 +2007,25 @@ function AiLessonDraftPanel({
             <Sparkles size={17} />
             <strong>AI 备课草稿</strong>
           </span>
-          <small>只整理学生和课程字段，调用备课 Agent 时再检索资料</small>
+          <div className="ai-draft-heading-tools">
+            <small>{lastAutoSavedAt ? `已自动保存 ${formatAiDraftSavedAt(lastAutoSavedAt)}` : "只整理学生和课程字段，调用备课 Agent 时再检索资料"}</small>
+            {draftDirty ? (
+              <button type="button" className="ghost-button" onClick={clearDraft}>
+                <Trash2 size={14} />
+                清空草稿
+              </button>
+            ) : null}
+          </div>
         </div>
+        {recoveryMessage ? (
+          <div className="draft-recovery-status">
+            <RefreshCcw size={14} />
+            <span>{recoveryMessage}</span>
+          </div>
+        ) : null}
         <label>
           非结构化备课内容
-          <textarea value={input} onChange={(event) => setInput(event.target.value)} rows={10} />
+          <textarea value={input} onChange={(event) => { setDraftDirty(true); setInput(event.target.value); }} rows={10} />
         </label>
         <section className="resource-picker ai-draft-files">
           <div className="resource-actions">
@@ -1580,6 +2070,7 @@ function AiLessonDraftPanel({
                     type="button"
                     aria-label={`移除 ${file.name}`}
                     onClick={() => {
+                      setDraftDirty(true);
                       setDraftFiles((current) => current.filter((_, itemIndex) => itemIndex !== index));
                       setAttachmentSummary(null);
                       setUploadMessage("");
@@ -1596,7 +2087,20 @@ function AiLessonDraftPanel({
             <div className="attachment-status-list">
               {attachmentSummary.items.map((item, index) => (
                 <div className={`attachment-status ${item.status}`} key={`${item.name}-${index}`}>
-                  <strong>{item.name}</strong>
+                  <div className="attachment-status-heading">
+                    <strong>{item.name}</strong>
+                    {item.savedPath && (item.retryable || (item.kind === "pdf" && item.status !== "ok" && item.message.includes("OCR"))) ? (
+                      <button
+                        type="button"
+                        className="ghost-button attachment-retry-button"
+                        disabled={Boolean(retryingOcrPath)}
+                        onClick={() => retryAttachmentOcr(item)}
+                      >
+                        {retryingOcrPath === item.savedPath ? <Loader2 className="spin" size={14} /> : <RefreshCcw size={14} />}
+                        {retryingOcrPath === item.savedPath ? "重试中" : "重试 OCR"}
+                      </button>
+                    ) : null}
+                  </div>
                   <span>{item.message}</span>
                   {item.savedPath ? <small>{item.savedPath}</small> : null}
                 </div>
@@ -1661,6 +2165,7 @@ function CourseForm({
   const [materialQuery, setMaterialQuery] = useState("");
   const [materialResults, setMaterialResults] = useState<RagSearchResult[]>([]);
   const [searchingMaterials, setSearchingMaterials] = useState(false);
+  const continuitySuggestion = student.nextLessonSuggestion?.trim() || "";
 
   function update(name: string, value: string | number | boolean) {
     setForm((current) => ({ ...current, [name]: value }));
@@ -1781,6 +2286,23 @@ function CourseForm({
           </select>
         </label>
       </div>
+
+      {continuitySuggestion ? (
+        <div className="continuity-seed">
+          <div>
+            <strong>上次课给出的下节课建议</strong>
+            <small>{continuitySuggestion}</small>
+          </div>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={() => update("desiredContent", form.desiredContent.trim() ? `${form.desiredContent.trim()}\n${continuitySuggestion}` : continuitySuggestion)}
+          >
+            <ChevronRight size={16} />
+            填入本课主题
+          </button>
+        </div>
+      ) : null}
 
       <label>
         想听的内容
@@ -1983,15 +2505,212 @@ function CourseSettingsPanel({
   );
 }
 
-function CourseDetail({
+function PostClassSummaryPanel({
+  course,
+  onSaved,
+  onError
+}: {
+  course: Course;
+  onSaved: () => Promise<void> | void;
+  onError: (message: string) => void;
+}) {
+  const [form, setForm] = useState<CoursePostClassSummary>(() => ({
+    ...emptyPostClassSummary,
+    ...(course.postClassSummary || {})
+  }));
+  const [saving, setSaving] = useState(false);
+  const [drafting, setDrafting] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+
+  useEffect(() => {
+    setForm({ ...emptyPostClassSummary, ...(course.postClassSummary || {}) });
+  }, [course.id, course.postClassSummary]);
+
+  function update(name: keyof CoursePostClassSummary, value: string) {
+    setForm((current) => ({
+      ...current,
+      [name]: value,
+      status: current.status === "confirmed" ? "draft" : current.status
+    }));
+  }
+
+  async function saveDraft() {
+    setSaving(true);
+    try {
+      const data = await api.patch<{ summary: CoursePostClassSummary; course: Course }>(`/api/courses/${course.id}/post-class`, {
+        summary: { ...form, status: "draft" }
+      });
+      setForm({ ...emptyPostClassSummary, ...data.summary });
+      await onSaved();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function extractDraft() {
+    if (postClassHasContent(form) && !window.confirm("从产物重新提取会覆盖当前课后沉淀草稿，是否继续？")) return;
+    setDrafting(true);
+    try {
+      const data = await api.post<{ summary: CoursePostClassSummary; course: Course }>(`/api/courses/${course.id}/post-class/draft`);
+      setForm({ ...emptyPostClassSummary, ...data.summary });
+      await onSaved();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDrafting(false);
+    }
+  }
+
+  async function confirmSummary() {
+    setConfirming(true);
+    try {
+      const data = await api.post<{ summary: CoursePostClassSummary; course: Course; student: Student }>(
+        `/api/courses/${course.id}/post-class/confirm`,
+        { summary: form }
+      );
+      setForm({ ...emptyPostClassSummary, ...data.summary });
+      await onSaved();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setConfirming(false);
+    }
+  }
+
+  const confirmed = form.status === "confirmed";
+  const locked = course.status === "running" || course.status === "queued";
+  const hasContent = postClassHasContent(form);
+
+  return (
+    <section className="tool-group post-class-panel">
+      <div className="panel-title">
+        <ClipboardCheck size={18} />
+        <h4>课后结构化沉淀</h4>
+      </div>
+      <small className="quiet-copy">
+        先保存草稿，课后按真实课堂表现修正；点击确认后才会更新学生长期档案。
+      </small>
+      <div className="post-class-status">
+        <span className={confirmed ? "status status-completed" : "status status-draft"}>{confirmed ? "已确认" : "草稿"}</span>
+        {form.updatedAt ? <small>更新于 {formatDate(form.updatedAt)}</small> : null}
+        {form.confirmedAt ? <small>确认于 {formatDate(form.confirmedAt)}</small> : null}
+      </div>
+      {locked ? <div className="quiet-copy">课程正在生成中，完成后再提取或确认课后沉淀。</div> : null}
+      <label>
+        与上节课的衔接
+        <textarea disabled={locked} value={form.linkedPrevious || ""} onChange={(event) => update("linkedPrevious", event.target.value)} rows={2} />
+      </label>
+      <label>
+        本节课新增内容
+        <textarea disabled={locked} value={form.learned || ""} onChange={(event) => update("learned", event.target.value)} rows={3} />
+      </label>
+      <label>
+        已掌握/课堂亮点
+        <textarea disabled={locked} value={form.mastered || ""} onChange={(event) => update("mastered", event.target.value)} rows={3} />
+      </label>
+      <label>
+        待回收薄弱点
+        <textarea disabled={locked} value={form.unresolved || ""} onChange={(event) => update("unresolved", event.target.value)} rows={3} />
+      </label>
+      <label>
+        常错题型/方法问题
+        <textarea disabled={locked} value={form.commonMistakes || ""} onChange={(event) => update("commonMistakes", event.target.value)} rows={3} />
+      </label>
+      <label>
+        课后作业
+        <textarea disabled={locked} value={form.homework || ""} onChange={(event) => update("homework", event.target.value)} rows={2} />
+      </label>
+      <label>
+        下节课建议
+        <textarea disabled={locked} value={form.nextLessonSuggestion || ""} onChange={(event) => update("nextLessonSuggestion", event.target.value)} rows={3} />
+      </label>
+      <label>
+        老师补充
+        <textarea disabled={locked} value={form.teacherNotes || ""} onChange={(event) => update("teacherNotes", event.target.value)} rows={2} />
+      </label>
+      <div className="button-row">
+        <button type="button" className="ghost-button" disabled={locked || drafting} onClick={extractDraft}>
+          {drafting ? <Loader2 className="spin" size={16} /> : <FileText size={16} />}
+          从产物提取草稿
+        </button>
+        <button type="button" className="ghost-button" disabled={locked || saving} onClick={saveDraft}>
+          {saving ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
+          保存草稿
+        </button>
+        <button type="button" className="primary-button" disabled={locked || confirming || !hasContent} onClick={confirmSummary}>
+          {confirming ? <Loader2 className="spin" size={16} /> : <CheckCircle2 size={16} />}
+          {confirmed ? "重新确认并更新档案" : "确认并更新档案"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function CourseContinuityBar({
   student,
   course,
+  courses,
+  onSelectCourse
+}: {
+  student: Student;
+  course: Course;
+  courses: Course[];
+  onSelectCourse: (id: string) => void;
+}) {
+  const timeline = sortCoursesByTimelineAsc(courses);
+  const currentIndex = timeline.findIndex((item) => item.id === course.id);
+  const previousCourse = currentIndex > 0 ? timeline[currentIndex - 1] : null;
+  const nextCourse = currentIndex >= 0 ? timeline[currentIndex + 1] : null;
+  const needsPostClass = course.status === "completed" && course.postClassSummary?.status !== "confirmed";
+
+  return (
+    <section className="continuity-bar">
+      <div className="continuity-step">
+        <span>上一节</span>
+        {previousCourse ? (
+          <button type="button" className="continuity-link" onClick={() => onSelectCourse(previousCourse.id)}>
+            {previousCourse.desiredContent || "未命名课程"}
+          </button>
+        ) : (
+          <strong>暂无历史课</strong>
+        )}
+        <small>{previousCourse ? formatDate(previousCourse.lessonTime || previousCourse.createdAt) : "本节会作为连续档案起点"}</small>
+      </div>
+      <div className={needsPostClass ? "continuity-step attention" : "continuity-step"}>
+        <span>本节沉淀</span>
+        <strong>{postClassStateLabel(course)}</strong>
+        <small>{needsPostClass ? "确认后才会更新学生长期档案" : "后续备课会读取确认后的档案"}</small>
+      </div>
+      <div className="continuity-step">
+        <span>下一节</span>
+        {nextCourse ? (
+          <button type="button" className="continuity-link" onClick={() => onSelectCourse(nextCourse.id)}>
+            {nextCourse.desiredContent || "未命名课程"}
+          </button>
+        ) : (
+          <strong>{student.nextLessonSuggestion ? compactText(student.nextLessonSuggestion, 80) : "待规划"}</strong>
+        )}
+        <small>{nextCourse ? formatDate(nextCourse.lessonTime || nextCourse.createdAt) : "新建课程时可沿用下节课建议"}</small>
+      </div>
+    </section>
+  );
+}
+
+function CourseDetail({
+  student,
+  courses,
+  course,
+  onSelectCourse,
   onRefresh,
   onDeleteCourse,
   onError
 }: {
   student: Student;
+  courses: Course[];
   course: Course | null;
+  onSelectCourse: (id: string) => void;
   onRefresh: () => Promise<void> | void;
   onDeleteCourse: (course: Course) => Promise<void>;
   onError: (message: string) => void;
@@ -2006,42 +2725,55 @@ function CourseDetail({
   const [checkingQuality, setCheckingQuality] = useState(false);
   const [editing, setEditing] = useState(false);
   const [refineInstruction, setRefineInstruction] = useState("");
+  const [refineFiles, setRefineFiles] = useState<File[]>([]);
+  const [refineUploadStatus, setRefineUploadStatus] = useState<{ tone: "info" | "success" | "error"; text: string } | null>(null);
   const [refining, setRefining] = useState(false);
+  const [pdfRefinePages, setPdfRefinePages] = useState("");
+  const [pdfRefineInstruction, setPdfRefineInstruction] = useState("");
+  const [pdfRefining, setPdfRefining] = useState(false);
   const [materialQuery, setMaterialQuery] = useState("");
   const [materialResults, setMaterialResults] = useState<RagSearchResult[]>([]);
   const [searchingMaterials, setSearchingMaterials] = useState(false);
+  const [notifyingFeishu, setNotifyingFeishu] = useState(false);
+  const [detailTab, setDetailTab] = useState<CourseDetailTab>("preview");
+  const refineFileInputRef = useRef<HTMLInputElement | null>(null);
+  const refineImageInputRef = useRef<HTMLInputElement | null>(null);
 
-  const selectedFile = files.find((file) => file.path === selectedPath) || files[0] || null;
+  const courseId = course?.id || "";
+  const courseJobId = course?.jobId || "";
+  const previewFiles = courseOutputFiles(files);
+  const selectedFile = previewFiles.find((file) => file.path === selectedPath) || preferredCourseOutputFile(previewFiles);
 
   const loadFiles = useCallback(async () => {
-    if (!course) return;
-    const data = await api.get<{ files: CourseFile[] }>(`/api/courses/${course.id}/files`);
-    setFiles(data.files);
+    if (!courseId) return;
+    const data = await api.get<{ files: CourseFile[] }>(`/api/courses/${courseId}/files`);
+    setFiles((current) => (sameCourseFileList(current, data.files) ? current : data.files));
     setSelectedPath((current) => {
-      if (current && data.files.some((file) => file.path === current)) return current;
-      return data.files[0]?.path || "";
+      const outputFiles = courseOutputFiles(data.files);
+      if (current && outputFiles.some((file) => file.path === current)) return current;
+      return preferredCourseOutputFile(outputFiles)?.path || "";
     });
-  }, [course]);
+  }, [courseId]);
 
   const loadJob = useCallback(async () => {
-    if (!course?.jobId) {
+    if (!courseJobId) {
       setJob(null);
       setLogTail("");
       return;
     }
-    const data = await api.get<{ job: Job; logTail: string }>(`/api/jobs/${course.jobId}`);
+    const data = await api.get<{ job: Job; logTail: string }>(`/api/jobs/${courseJobId}`);
     setJob(data.job);
     setLogTail(data.logTail);
-  }, [course]);
+  }, [courseJobId]);
 
   const loadJobs = useCallback(async () => {
-    if (!course) {
+    if (!courseId) {
       setJobs([]);
       return;
     }
-    const data = await api.get<{ jobs: Job[] }>(`/api/courses/${course.id}/jobs`);
+    const data = await api.get<{ jobs: Job[] }>(`/api/courses/${courseId}/jobs`);
     setJobs(data.jobs);
-  }, [course]);
+  }, [courseId]);
 
   useEffect(() => {
     setFiles([]);
@@ -2049,27 +2781,47 @@ function CourseDetail({
     setJobs([]);
     setManualQuality(null);
     setEditing(false);
+    setDetailTab("preview");
     setRefineInstruction("");
+    setRefineFiles([]);
+    setRefineUploadStatus(null);
+    setPdfRefinePages("");
+    setPdfRefineInstruction("");
     setMaterialQuery("");
     setMaterialResults([]);
+    if (!courseId) return;
     loadFiles().catch((err) => onError(err.message));
     loadJob().catch((err) => onError(err.message));
     loadJobs().catch((err) => onError(err.message));
-  }, [course?.id, loadFiles, loadJob, loadJobs, onError]);
+  }, [courseId, loadFiles, loadJob, loadJobs, onError]);
 
   const polling =
     course?.status === "running" ||
     course?.status === "queued" ||
     job?.status === "running" ||
     job?.status === "queued";
+  const wasPollingRef = useRef(false);
   useInterval(
     () => {
-      loadFiles().catch((err) => onError(err.message));
       loadJob().catch((err) => onError(err.message));
       loadJobs().catch((err) => onError(err.message));
     },
     polling ? 4000 : null
   );
+  useInterval(
+    () => {
+      loadFiles().catch((err) => onError(err.message));
+    },
+    polling ? 20000 : null
+  );
+  useEffect(() => {
+    const wasPolling = wasPollingRef.current;
+    wasPollingRef.current = polling;
+    if (!wasPolling || polling || !courseId) return;
+    loadFiles().catch((err) => onError(err.message));
+    loadJob().catch((err) => onError(err.message));
+    loadJobs().catch((err) => onError(err.message));
+  }, [polling, courseId, loadFiles, loadJob, loadJobs, onError]);
 
   if (!course) {
     return (
@@ -2152,19 +2904,57 @@ function CourseDetail({
   async function refineCourse(event: React.FormEvent) {
     event.preventDefault();
     if (!course) return;
+    const submittedFileCount = refineFiles.length;
+    setRefineUploadStatus(
+      submittedFileCount > 0 ? { tone: "info", text: `正在上传 ${submittedFileCount} 个文件...` } : null
+    );
     setRefining(true);
     try {
-      const data = await api.post<{ job: Job }>(`/api/courses/${course.id}/refine`, { instruction: refineInstruction });
+      const formData = new FormData();
+      formData.append("instruction", refineInstruction);
+      refineFiles.forEach((file) => formData.append("files", file, file.name));
+      const data = await api.post<{ job: Job; files: string[] }>(`/api/courses/${course.id}/refine`, formData);
       setJob(data.job);
       setLogTail("");
       setManualQuality(null);
       setRefineInstruction("");
+      setRefineFiles([]);
+      setRefineUploadStatus(
+        data.files.length > 0
+          ? { tone: "success", text: `上传成功：${data.files.length} 个文件已保存，补充任务正在调用 OCR。` }
+          : { tone: "success", text: "补充任务已提交。" }
+      );
+      await onRefresh();
+      await loadJobs();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setRefineUploadStatus({ tone: "error", text: `上传或提交失败：${message}` });
+      onError(message);
+    } finally {
+      setRefining(false);
+    }
+  }
+
+  async function refinePdfImages(event: React.FormEvent) {
+    event.preventDefault();
+    if (!course) return;
+    setPdfRefining(true);
+    try {
+      const data = await api.post<{ job: Job }>(`/api/courses/${course.id}/pdf-image-refine`, {
+        pages: pdfRefinePages,
+        instruction: pdfRefineInstruction
+      });
+      setJob(data.job);
+      setLogTail("");
+      setManualQuality(null);
+      setPdfRefinePages("");
+      setPdfRefineInstruction("");
       await onRefresh();
       await loadJobs();
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
-      setRefining(false);
+      setPdfRefining(false);
     }
   }
 
@@ -2214,15 +3004,36 @@ function CourseDetail({
     }
   }
 
+  async function notifyFeishu() {
+    if (!course) return;
+    setNotifyingFeishu(true);
+    try {
+      await api.post<{ course: Course; notification: { action: "sent" | "skipped" | "failed"; detail: string } }>(
+        `/api/courses/${course.id}/feishu/notify`
+      );
+      await onRefresh();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setNotifyingFeishu(false);
+    }
+  }
+
   const currentQuality = job?.quality || manualQuality;
   const selectedMaterials = splitLocalFiles(course.localFiles);
   const agentWorkStatus = agentWorkFiles.map((workFile) => ({
     ...workFile,
     file: files.find((file) => workFile.paths.includes(file.relativePath.replace(/\\/g, "/"))) || null
   }));
+  const tabs: Array<{ key: CourseDetailTab; label: string; count?: number }> = [
+    { key: "preview", label: "产物预览", count: previewFiles.length },
+    { key: "workflow", label: "资料与流程", count: agentWorkStatus.filter((item) => item.file).length },
+    { key: "postClass", label: "课后沉淀", count: course.postClassSummary?.status === "confirmed" ? 1 : undefined },
+    { key: "activity", label: "任务记录", count: jobs.length }
+  ];
 
   return (
-    <section className="detail-panel course-console">
+    <section className="detail-panel course-console redesigned-course">
       <header className="detail-header course-console-header">
         <div>
           <span className={statusClass(course.status)}>{statusLabel(course.status)}</span>
@@ -2242,10 +3053,16 @@ function CourseDetail({
               取消生成
             </button>
           ) : null}
-          <button className="ghost-button" disabled={polling} onClick={() => setEditing((value) => !value)}>
+          <button className="ghost-button" onClick={() => setEditing((value) => !value)}>
             <SlidersHorizontal size={17} />
             编辑设置
           </button>
+          {course.status === "completed" ? (
+            <button className="ghost-button" disabled={polling || notifyingFeishu} onClick={notifyFeishu}>
+              {notifyingFeishu ? <Loader2 className="spin" size={17} /> : <Send size={17} />}
+              重发飞书消息
+            </button>
+          ) : null}
           <button className="ghost-button danger-button" disabled={polling} onClick={() => onDeleteCourse(course).catch((err) => onError(err.message))}>
             <Trash2 size={17} />
             删除课程
@@ -2257,15 +3074,36 @@ function CourseDetail({
         </div>
       </header>
 
-      <div className="meta-strip">
-        <span>
-          <CalendarClock size={15} />
-          {formatDate(course.lessonTime)}
-        </span>
-        <span>{course.score || "分数待填"}</span>
-        <span>{course.province || "地区待填"}</span>
-        <span>{course.lessonKind || "课程性质待填"}</span>
-      </div>
+      <section className="course-overview-band">
+        <div className="meta-strip">
+          <span>
+            <CalendarClock size={15} />
+            {formatDate(course.lessonTime)}
+          </span>
+          <span>{course.score || "分数待填"}</span>
+          <span>{course.province || "地区待填"}</span>
+          <span>{course.lessonKind || "课程性质待填"}</span>
+        </div>
+
+        <CourseContinuityBar student={student} course={course} courses={courses} onSelectCourse={onSelectCourse} />
+
+        {course.feishuSync ? (
+          <div className="meta-strip">
+            {course.feishuSync.folderUrl ? (
+              <a href={course.feishuSync.folderUrl} target="_blank" rel="noreferrer">
+                <ExternalLink size={15} />
+                飞书目录
+              </a>
+            ) : (
+              <span>飞书目录待同步</span>
+            )}
+            <span>消息：{feishuNotificationLabel(course.feishuSync.notificationStatus)}</span>
+            {course.feishuSync.notificationDetail ? (
+              <span title={course.feishuSync.notificationDetail}>{compactText(course.feishuSync.notificationDetail)}</span>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
 
       {editing ? (
         <CourseSettingsPanel
@@ -2277,150 +3115,278 @@ function CourseDetail({
         />
       ) : null}
 
-      <div className="course-console-grid">
-        <FilePreview file={selectedFile} />
+      <nav className="course-tabs" aria-label="课程详情">
+        {tabs.map((tab) => (
+          <button key={tab.key} className={detailTab === tab.key ? "active" : ""} onClick={() => setDetailTab(tab.key)}>
+            {tab.label}
+            {tab.count !== undefined ? <span>{tab.count}</span> : null}
+          </button>
+        ))}
+      </nav>
 
-        <section className="file-panel course-tools-panel">
-          <section className="tool-group">
-            <div className="panel-title">
-              <FileText size={18} />
-              <h4>资料与产物</h4>
-            </div>
-            <label className="upload-line">
-              <Upload size={16} />
-              上传本地文件/图片
-              <input type="file" multiple onChange={uploadAttachments} />
-            </label>
-            <div className="course-material-picker">
-              <div className="material-select-row">
-                <Search size={16} />
-                <input
-                  value={materialQuery}
-                  onChange={(event) => setMaterialQuery(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      searchCourseMaterials();
-                    }
-                  }}
-                  placeholder="搜索资料库并加入本课"
-                />
-                <button type="button" className="ghost-button" disabled={searchingMaterials || polling} onClick={searchCourseMaterials}>
-                  {searchingMaterials ? <Loader2 className="spin" size={16} /> : <Search size={16} />}
-                </button>
+      <div className="course-tab-body">
+        {detailTab === "preview" ? (
+          <div className="course-preview-layout">
+            <FilePreview file={selectedFile} />
+            <section className="tool-group generated-files">
+              <div className="panel-title">
+                <FolderOpen size={18} />
+                <h4>生成文件</h4>
               </div>
-              {materialResults.length > 0 ? (
-                <div className="material-pick-list compact">
-                  {materialResults.slice(0, 5).map((result) => (
-                    <button
-                      type="button"
-                      key={result.material.path}
-                      disabled={polling}
-                      onClick={() => selectCourseMaterial(result.material.path)}
-                    >
-                      <strong>{result.material.title}</strong>
-                      <small>{result.reason}</small>
-                    </button>
+              <form className="pdf-refine-panel" onSubmit={refinePdfImages}>
+                <div className="panel-title compact-title">
+                  <Image size={17} />
+                  <h4>PDF 图形修订</h4>
+                </div>
+                <label>
+                  页码
+                  <input
+                    value={pdfRefinePages}
+                    onChange={(event) => setPdfRefinePages(event.target.value)}
+                    placeholder="例如：4 或 3,7-8"
+                    disabled={polling}
+                  />
+                </label>
+                <label>
+                  修改要求
+                  <textarea
+                    value={pdfRefineInstruction}
+                    onChange={(event) => setPdfRefineInstruction(event.target.value)}
+                    placeholder="只写要改的图形/标签/版面，例如：第4页立体图 C 点和 C1 点太近，把底面三角形展开一点，标签不要压线。"
+                    rows={4}
+                    disabled={polling}
+                  />
+                </label>
+                <button className="ghost-button" disabled={polling || pdfRefining || !pdfRefinePages.trim() || !pdfRefineInstruction.trim()}>
+                  {pdfRefining ? <Loader2 className="spin" size={16} /> : <Send size={16} />}
+                  单独修 PDF 图
+                </button>
+              </form>
+              <div className="file-list">
+                {previewFiles.length === 0 ? (
+                  <div className="quiet-empty">等待生成文件</div>
+                ) : (
+                  previewFiles.map((file) => (
+                    <div key={file.path} className={file.path === selectedFile?.path ? "file-row active" : "file-row"}>
+                      <button className="file-select" onClick={() => setSelectedPath(file.path)}>
+                        <span>{file.name}</span>
+                        <small>{courseFileKindLabel(file)}</small>
+                      </button>
+                      <a
+                        className="icon-button"
+                        title="新页面打开"
+                        aria-label="新页面打开"
+                        href={`/viewer?path=${encodeURIComponent(file.path)}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <ExternalLink size={15} />
+                      </a>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+          </div>
+        ) : null}
+
+        {detailTab === "workflow" ? (
+          <section className="course-tool-stack">
+            <section className="tool-group">
+              <div className="panel-title">
+                <FileText size={18} />
+                <h4>资料选择</h4>
+              </div>
+              <label className="upload-line">
+                <Upload size={16} />
+                上传本地文件/图片
+                <input type="file" multiple onChange={uploadAttachments} />
+              </label>
+              <div className="course-material-picker">
+                <div className="material-select-row">
+                  <Search size={16} />
+                  <input
+                    value={materialQuery}
+                    onChange={(event) => setMaterialQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        searchCourseMaterials();
+                      }
+                    }}
+                    placeholder="搜索资料库并加入本课"
+                  />
+                  <button type="button" className="ghost-button" disabled={searchingMaterials} onClick={searchCourseMaterials}>
+                    {searchingMaterials ? <Loader2 className="spin" size={16} /> : <Search size={16} />}
+                    搜索
+                  </button>
+                </div>
+                {materialResults.length > 0 ? (
+                  <div className="material-pick-list compact">
+                    {materialResults.slice(0, 5).map((result) => (
+                      <button type="button" key={result.material.path} onClick={() => selectCourseMaterial(result.material.path)}>
+                        <strong>{result.material.title}</strong>
+                        <small>{result.reason}</small>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              {selectedMaterials.length > 0 ? (
+                <div className="selected-materials">
+                  <strong>已选资料</strong>
+                  {selectedMaterials.map((item) => (
+                    <div key={item} className="selected-material-row">
+                      <span title={item}>{localFileLabel(item)}</span>
+                      <button
+                        className="icon-button danger-icon"
+                        title="移除"
+                        aria-label="移除已选资料"
+                        onClick={() => removeCourseMaterial(item)}
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
                   ))}
                 </div>
               ) : null}
-            </div>
-            {selectedMaterials.length > 0 ? (
-              <div className="selected-materials">
-                <strong>已选资料</strong>
-                {selectedMaterials.map((item) => (
-                  <div key={item} className="selected-material-row">
-                    <span title={item}>{localFileLabel(item)}</span>
-                    <button
-                      className="icon-button danger-icon"
-                      disabled={polling}
-                      title="移除"
-                      aria-label="移除已选资料"
-                      onClick={() => removeCourseMaterial(item)}
-                    >
-                      <X size={14} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-          </section>
+            </section>
 
-          <section className="tool-group">
             <AgentWorkPanel items={agentWorkStatus} />
+            {currentQuality ? <QualityPanel quality={currentQuality} /> : null}
           </section>
+        ) : null}
 
-          <section className="tool-group generated-files">
-            <div className="panel-title">
-              <FolderOpen size={18} />
-              <h4>生成文件</h4>
-            </div>
-            <div className="file-list">
-              {files.length === 0 ? (
-                <div className="quiet-empty">等待生成文件</div>
-              ) : (
-                files.map((file) => (
-                  <div
-                    key={file.path}
-                    className={file.path === selectedFile?.path ? "file-row active" : "file-row"}
-                  >
-                    <button className="file-select" onClick={() => setSelectedPath(file.path)}>
-                      <span>{file.name}</span>
-                      <small>{file.kind}</small>
+        {detailTab === "postClass" ? <PostClassSummaryPanel course={course} onSaved={onRefresh} onError={onError} /> : null}
+
+        {detailTab === "activity" ? (
+          <section className="course-tool-stack">
+            {job ? (
+              <div className="job-log">
+                <div className="job-log-title">
+                  <span className={statusClass(job.status)}>{statusLabel(job.status)}</span>
+                  <small>{job.exitCode ?? ""}</small>
+                  {job.status === "failed" || job.status === "canceled" ? (
+                    <button className="ghost-button" disabled={busy || polling} onClick={() => continueJob(job.id)}>
+                      {busy ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
+                      继续生成
                     </button>
-                    <a
-                      className="icon-button"
-                      title="新页面打开"
-                      aria-label="新页面打开"
-                      href={`/viewer?path=${encodeURIComponent(file.path)}`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      <ExternalLink size={15} />
-                    </a>
-                  </div>
-                ))
-              )}
-            </div>
-          </section>
-
-          {currentQuality ? <QualityPanel quality={currentQuality} /> : null}
-
-          {job ? (
-            <div className="job-log">
-              <div className="job-log-title">
-                <span className={statusClass(job.status)}>{statusLabel(job.status)}</span>
-                <small>{job.exitCode ?? ""}</small>
-                {job.status === "failed" || job.status === "canceled" ? (
-                  <button className="ghost-button" disabled={busy || polling} onClick={() => continueJob(job.id)}>
-                    {busy ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
-                    继续生成
-                  </button>
-                ) : null}
+                  ) : null}
+                </div>
+                <pre>{logTail || "暂无日志"}</pre>
               </div>
-              <pre>{logTail || "暂无日志"}</pre>
-            </div>
-          ) : null}
+            ) : (
+              <div className="quiet-empty">暂无任务日志</div>
+            )}
 
-          {jobs.length > 0 ? <JobHistory jobs={jobs} disabled={busy || polling} onContinue={continueJob} /> : null}
+            {jobs.length > 0 ? <JobHistory jobs={jobs} disabled={busy || polling} onContinue={continueJob} /> : null}
 
-          <form className="refine-panel" onSubmit={refineCourse}>
-            <label>
-              内容不够时继续补充
-              <textarea
-                value={refineInstruction}
-                onChange={(event) => setRefineInstruction(event.target.value)}
-                placeholder="例如：逐字稿再细一点，补 6 道函数单调性变式题，PDF 课件页数增加到 12 页"
-                rows={3}
-                disabled={polling}
-              />
-            </label>
-            <button className="ghost-button" disabled={polling || refining || !refineInstruction.trim()}>
-              {refining ? <Loader2 className="spin" size={16} /> : <Send size={16} />}
-              提交补充
-            </button>
-          </form>
-        </section>
+            <form className="refine-panel" onSubmit={refineCourse}>
+              <label>
+                内容不够时继续补充
+                <textarea
+                  value={refineInstruction}
+                  onChange={(event) => setRefineInstruction(event.target.value)}
+                  placeholder="例如：逐字稿再细一点，补 6 道函数单调性变式题，PDF 课件页数增加到 12 页"
+                  rows={3}
+                  disabled={polling}
+                />
+              </label>
+              <section className="resource-picker refine-files">
+                <div className="resource-actions">
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    disabled={polling || refining}
+                    onClick={() => refineFileInputRef.current?.click()}
+                  >
+                    <Upload size={16} />
+                    上传 PDF/文件
+                  </button>
+                  <input
+                    ref={refineFileInputRef}
+                    className="hidden-file-input"
+                    type="file"
+                    accept=".pdf,.txt,.md,.markdown,.tex,.csv,application/pdf,text/*"
+                    multiple
+                    onChange={(event) => {
+                      const selected = Array.from(event.target.files || []);
+                      setRefineFiles((current) => [...current, ...selected]);
+                      if (selected.length > 0) {
+                        setRefineUploadStatus({ tone: "info", text: `已选择 ${selected.length} 个文件，点击“提交补充”后上传。` });
+                      }
+                      event.target.value = "";
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    disabled={polling || refining}
+                    onClick={() => refineImageInputRef.current?.click()}
+                  >
+                    <Image size={16} />
+                    上传图片
+                  </button>
+                  <input
+                    ref={refineImageInputRef}
+                    className="hidden-file-input"
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={(event) => {
+                      const selected = Array.from(event.target.files || []);
+                      setRefineFiles((current) => [...current, ...selected]);
+                      if (selected.length > 0) {
+                        setRefineUploadStatus({ tone: "info", text: `已选择 ${selected.length} 张图片，点击“提交补充”后上传。` });
+                      }
+                      event.target.value = "";
+                    }}
+                  />
+                  <span>{refineFiles.length > 0 ? `${refineFiles.length} 个文件将随补充任务上传` : "PDF/图片会先调用 OCR"}</span>
+                </div>
+                {refineFiles.length > 0 ? (
+                  <div className="draft-file-list">
+                    {refineFiles.map((file, index) => (
+                      <span key={`${file.name}-${file.lastModified}-${index}`}>
+                        {file.name}
+                        <button
+                          type="button"
+                          aria-label={`移除 ${file.name}`}
+                          onClick={() => {
+                            const remainingCount = Math.max(0, refineFiles.length - 1);
+                            setRefineFiles((current) => current.filter((_, itemIndex) => itemIndex !== index));
+                            setRefineUploadStatus(
+                              remainingCount > 0
+                                ? { tone: "info", text: `已选择 ${remainingCount} 个文件，点击“提交补充”后上传。` }
+                                : null
+                            );
+                          }}
+                        >
+                          <X size={13} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                {refineUploadStatus ? (
+                  <div className={`refine-upload-status ${refineUploadStatus.tone}`} role="status">
+                    {refining && refineUploadStatus.tone === "info" ? <Loader2 className="spin" size={14} /> : null}
+                    {!refining && refineUploadStatus.tone === "success" ? <CheckCircle2 size={14} /> : null}
+                    {!refining && refineUploadStatus.tone === "error" ? <X size={14} /> : null}
+                    <span>{refineUploadStatus.text}</span>
+                  </div>
+                ) : null}
+              </section>
+              <button
+                className="ghost-button"
+                disabled={polling || refining || (!refineInstruction.trim() && refineFiles.length === 0)}
+              >
+                {refining ? <Loader2 className="spin" size={16} /> : <Send size={16} />}
+                提交补充
+              </button>
+            </form>
+          </section>
+        ) : null}
       </div>
     </section>
   );
@@ -2497,6 +3463,14 @@ function JobHistory({
   disabled: boolean;
   onContinue: (jobId: string) => void;
 }) {
+  const jobKindLabel = (historyJob: Job) => {
+    if (historyJob.kind === "pdf-image-refine") return `PDF 图形修订${historyJob.pdfRefinePages ? ` P${historyJob.pdfRefinePages}` : ""}`;
+    if (historyJob.refineInstruction) {
+      return historyJob.supplementalFiles?.length ? `补充生成 · ${historyJob.supplementalFiles.length} 个附件` : "补充生成";
+    }
+    return "首次生成";
+  };
+
   return (
     <section className="job-history">
       <strong>生成记录</strong>
@@ -2505,7 +3479,7 @@ function JobHistory({
           <span className={statusClass(historyJob.status)}>{statusLabel(historyJob.status)}</span>
           <div>
             <small>
-              {historyJob.refineInstruction ? "补充生成" : "首次生成"} · {formatDate(historyJob.createdAt)}
+              {jobKindLabel(historyJob)} · {formatDate(historyJob.createdAt)}
               {index === 0 ? " · 最新" : ""}
             </small>
             {historyJob.quality ? <small>质量评分 {historyJob.quality.score}</small> : null}
@@ -2525,17 +3499,31 @@ function JobHistory({
 function FilePreview({ file }: { file: CourseFile | null }) {
   const [content, setContent] = useState("");
   const [error, setError] = useState("");
+  const previousPathRef = useRef("");
   const markdownContent = useMemo(() => normalizeMarkdownMath(content), [content]);
 
   useEffect(() => {
-    setContent("");
+    const filePath = file?.path || "";
+    const fileKind = file?.kind || "";
+    const pathChanged = previousPathRef.current !== filePath;
+    previousPathRef.current = filePath;
+
+    if (pathChanged) setContent("");
     setError("");
-    if (!file || !["markdown", "text"].includes(file.kind)) return;
+    if (!filePath || !["markdown", "text"].includes(fileKind)) return;
+    let canceled = false;
     api
-      .get<{ content: string }>(`/api/files/content?path=${encodeURIComponent(file.path)}`)
-      .then((data) => setContent(data.content))
-      .catch((err) => setError(err.message));
-  }, [file]);
+      .get<{ content: string }>(`/api/files/content?path=${encodeURIComponent(filePath)}`)
+      .then((data) => {
+        if (!canceled) setContent(data.content);
+      })
+      .catch((err) => {
+        if (!canceled) setError(err.message);
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [file?.path, file?.kind, file?.updatedAt]);
 
   if (!file) {
     return (
@@ -2546,7 +3534,7 @@ function FilePreview({ file }: { file: CourseFile | null }) {
     );
   }
 
-  const rawUrl = `/api/files/raw?path=${encodeURIComponent(file.path)}`;
+  const rawUrl = `/api/files/raw?path=${encodeURIComponent(file.path)}&v=${encodeURIComponent(file.updatedAt || "")}`;
   const viewerUrl = `/viewer?path=${encodeURIComponent(file.path)}`;
 
   return (

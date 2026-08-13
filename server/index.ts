@@ -2,9 +2,9 @@ import express from "express";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import multer from "multer";
-import pdfParse from "pdf-parse";
 import type { NextFunction, Request, Response } from "express";
 import {
   clearSessionCookie,
@@ -17,12 +17,21 @@ import {
 import { backupFileName, createAppBackup } from "./backup.js";
 import { config, ensureAppDirs, logsDir, tempUploadDir, uploadRoot } from "./config.js";
 import { createDiagnostics } from "./diagnostics.js";
-import { syncCourseToFeishu } from "./feishuSync.js";
-import { recoverCourseOutputDir } from "./courseOutput.js";
+import { resendCourseFeishuNotification, syncCourseToFeishu } from "./feishuSync.js";
+import { courseClassroomPdfFileName, recoverCourseOutputDir } from "./courseOutput.js";
 import { assertWithinWorkspace, listCourseFiles, uniqueDestination } from "./files.js";
 import { onJobFinished } from "./jobEvents.js";
-import { cancelCodexJob, continueCodexJob, createCodexJob, recoverInterruptedJobs, runCodexJob } from "./jobs.js";
+import {
+  applyPostClassSummaryToStudent,
+  buildPostClassSummaryDraft,
+  cancelCodexJob,
+  continueCodexJob,
+  createCodexJob,
+  recoverInterruptedJobs,
+  runCodexJob
+} from "./jobs.js";
 import { assessCourseQuality } from "./quality.js";
+import { readOcrMarkdown, runPaddleOcrForFile, sharedOcrOutputDir, type OcrFileResult } from "./ocr.js";
 import {
   clearRagIndexCache,
   checkpointRagIndex,
@@ -41,8 +50,16 @@ import {
   searchRag
 } from "./rag.js";
 import { authRateLimit, clearAuthRateLimit, securityHeaders } from "./security.js";
-import { Store, newId, nowIso, publicCourse, safeRelativeUploadPath, sanitizeFilename } from "./store.js";
-import type { Course, CourseType, Student } from "./types.js";
+import {
+  fitFilenameComponent,
+  Store,
+  newId,
+  nowIso,
+  publicCourse,
+  safeRelativeUploadPath,
+  sanitizeFilename
+} from "./store.js";
+import type { Course, CoursePostClassSummary, CourseType, Material, Student } from "./types.js";
 
 ensureAppDirs();
 
@@ -85,6 +102,7 @@ interface AiDraftAttachmentItem {
   pages?: number;
   size: number;
   savedPath?: string;
+  retryable?: boolean;
 }
 
 interface AiDraftAttachmentSummary {
@@ -179,11 +197,12 @@ function makeOutputDir(studentName: string, courseType: CourseType, lessonTime: 
   const typeLabel = courseType === "trial" ? "试听课" : "正式课";
   const studentDir = path.join(config.workspaceRoot, sanitizeFilename(studentName, "学生"));
   const topic = sanitizeFilename(desiredContent || "备课", "备课");
-  const baseName = `${lessonDateSlug(lessonTime)}_${typeLabel}_${topic}`;
-  let outputDir = path.join(studentDir, baseName);
+  const baseStem = `${lessonDateSlug(lessonTime)}_${typeLabel}_${topic}`;
+  let outputDir = path.join(studentDir, fitFilenameComponent(baseStem));
   let counter = 1;
   while (fs.existsSync(outputDir)) {
-    outputDir = path.join(studentDir, `${baseName}-${counter}`);
+    const suffix = `-${counter}`;
+    outputDir = path.join(studentDir, fitFilenameComponent(baseStem, suffix));
     counter += 1;
   }
   return outputDir;
@@ -427,10 +446,6 @@ async function pdfToImageParts(file: Express.Multer.File, maxPages: number) {
 
 async function extractAiDraftAttachmentText(file: Express.Multer.File) {
   const buffer = await fs.promises.readFile(file.path);
-  if (isPdfUpload(file)) {
-    const parsed = await pdfParse(buffer);
-    return parsed.text || "";
-  }
   if (isTextUpload(file)) return buffer.toString("utf8");
   return "";
 }
@@ -465,6 +480,148 @@ function mergeLocalFilesText(current: string, paths: string[]) {
   return [...existing].join("\n");
 }
 
+function stableFileFingerprint(filePath: string) {
+  const stat = fs.statSync(filePath);
+  return createHash("sha1")
+    .update(path.resolve(filePath))
+    .update(String(stat.size))
+    .update(String(Math.floor(stat.mtimeMs)))
+    .digest("hex")
+    .slice(0, 12);
+}
+
+function workspaceOwnerFromPath(filePath: string) {
+  const relative = path.relative(path.resolve(config.workspaceRoot), path.resolve(filePath));
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return "未分类";
+  return relative.split(path.sep).filter(Boolean)[0] || "未分类";
+}
+
+function materialAutoOcrPath(sourcePdfPath: string, title: string) {
+  const owner = sanitizeFilename(workspaceOwnerFromPath(sourcePdfPath), "未分类");
+  const base = sanitizeFilename(path.basename(title, path.extname(title)) || path.basename(sourcePdfPath, path.extname(sourcePdfPath)), "OCR资料");
+  return path.join(uploadRoot, "自动OCR资料", owner, `${base}-${stableFileFingerprint(sourcePdfPath)}.md`);
+}
+
+function rewriteOcrMarkdownLinksForRag(markdown: string, ocrDir: string) {
+  const absolutize = (value: string) => {
+    if (!value || /^(?:https?:|data:|\/)/i.test(value)) return value;
+    return path.join(ocrDir, value).replace(/\\/g, "/");
+  };
+  return markdown
+    .replace(/src=(["'])([^"']+)\1/g, (_match, quote, value) => `src=${quote}${absolutize(value)}${quote}`)
+    .replace(/(!\[[^\]]*]\()([^)]+)(\))/g, (_match, prefix, value, suffix) => `${prefix}${absolutize(value)}${suffix}`);
+}
+
+function heuristicMaterialReview(filePath: string, markdown: string) {
+  const sample = `${path.basename(filePath)}\n${markdown.slice(0, 20000)}`;
+  const reusableSignals = [
+    /第\s*\d+\s*讲/,
+    /知识梳理|知识点|典型例题|例题|变式|练习|专题|考点|题型|讲义|教材|教辅|高考|模拟|试卷|答案|解析/,
+    /方法总结|能力提升|巩固训练|课后作业/
+  ];
+  const privateSignals = [/家长|课堂表现|学生姓名|授课老师|课后反馈|微信|电话|手机号|一对一/];
+  const signalScore = reusableSignals.reduce((sum, pattern) => sum + (pattern.test(sample) ? 1 : 0), 0);
+  const privateScore = privateSignals.reduce((sum, pattern) => sum + (pattern.test(sample) ? 1 : 0), 0);
+  return {
+    shouldIndex: markdown.replace(/\s+/g, "").length >= 1500 && signalScore >= 1 && privateScore <= 1,
+    reason: `heuristic reusable=${signalScore} private=${privateScore}`,
+    title: path.basename(filePath, path.extname(filePath))
+  };
+}
+
+function codexMaterialReview(filePath: string, markdown: string) {
+  const lastMessagePath = path.join(tempUploadDir, `auto-rag-review-${Date.now()}-${Math.random().toString(16).slice(2)}.md`);
+  const prompt = [
+    "你是数学备课资料库入库审核器。只输出 JSON，不要解释。",
+    "判断这份 PaddleOCR Markdown 是否值得加入长期 RAG 资料库。",
+    "应该入库：可复用的数学讲义、教辅、专题资料、题库、试卷、答案解析、知识点归纳。",
+    "不要入库：单个学生的私人沟通、课堂反馈、隐私信息、临时草稿、明显只属于一次课的个人记录。",
+    "输出格式：{\"shouldIndex\":true|false,\"title\":\"资料标题\",\"reason\":\"20字以内原因\"}",
+    "",
+    `文件路径：${filePath}`,
+    "",
+    markdown.slice(0, 12000)
+  ].join("\n");
+  const args = [
+    "exec",
+    "-C",
+    config.workspaceRoot,
+    "--sandbox",
+    "danger-full-access",
+    "--output-last-message",
+    lastMessagePath
+  ];
+  if (config.codexModel) args.push("--model", config.codexModel);
+  if (config.codexReasoningEffort) args.push("-c", `model_reasoning_effort="${config.codexReasoningEffort}"`);
+  args.push("-");
+  const result = spawnSync(config.codexCommand, args, {
+    cwd: config.workspaceRoot,
+    input: prompt,
+    encoding: "utf8",
+    timeout: 120000,
+    maxBuffer: 1024 * 1024,
+    shell: process.platform === "win32",
+    windowsHide: true,
+    env: {
+      ...process.env,
+      PREP_WORKSPACE: config.workspaceRoot,
+      LESSON_PREP_WEB_ROOT: config.projectRoot
+    }
+  });
+  const text = fs.existsSync(lastMessagePath) ? fs.readFileSync(lastMessagePath, "utf8") : result.stdout || "";
+  fs.promises.rm(lastMessagePath, { force: true }).catch(() => undefined);
+  if (result.error || result.status !== 0 || !text.trim()) throw new Error(result.error?.message || result.stderr || "Codex review failed.");
+  const parsed = jsonFromModelText(text) as Record<string, unknown>;
+  return {
+    shouldIndex: Boolean(parsed.shouldIndex),
+    reason: typeof parsed.reason === "string" ? parsed.reason : "codex review",
+    title: typeof parsed.title === "string" && parsed.title.trim() ? parsed.title.trim() : path.basename(filePath, path.extname(filePath))
+  };
+}
+
+async function maybeRegisterOcrMarkdownMaterial(sourcePdfPath: string, originalName: string, ocrResult: OcrFileResult) {
+  if (ocrResult.status !== "ok" || !ocrResult.combinedMarkdownPath || !fs.existsSync(ocrResult.combinedMarkdownPath)) {
+    return { queued: false, message: "OCR Markdown 不可用，未加入 RAG。" };
+  }
+
+  const rawMarkdown = fs.readFileSync(ocrResult.combinedMarkdownPath, "utf8").trim();
+  if (!rawMarkdown) return { queued: false, message: "OCR Markdown 为空，未加入 RAG。" };
+
+  let review = heuristicMaterialReview(sourcePdfPath, rawMarkdown);
+  try {
+    review = codexMaterialReview(sourcePdfPath, rawMarkdown);
+  } catch (error) {
+    console.warn(`[auto-rag] Codex review failed, using heuristic: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  if (!review.shouldIndex) {
+    return { queued: false, message: `未自动加入 RAG：${review.reason}` };
+  }
+
+  const destination = materialAutoOcrPath(sourcePdfPath, review.title || originalName);
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  const ocrDir = path.dirname(ocrResult.combinedMarkdownPath);
+  const ragMarkdown = [
+    `# ${review.title || path.basename(sourcePdfPath, path.extname(sourcePdfPath))}`,
+    "",
+    `- 来源 PDF：${sourcePdfPath}`,
+    `- PaddleOCR Markdown：${ocrResult.combinedMarkdownPath}`,
+    `- OCR 页数：${ocrResult.pageCount ?? "未知"}`,
+    `- OCR 字符数：${ocrResult.textChars ?? rawMarkdown.length}`,
+    `- 入库判断：${review.reason}`,
+    "",
+    "---",
+    "",
+    rewriteOcrMarkdownLinksForRag(rawMarkdown, ocrDir),
+    ""
+  ].join("\n");
+  fs.writeFileSync(destination, ragMarkdown, "utf8");
+  registerMaterialFile(store, destination, "text/markdown");
+  store.save();
+  void startRagIncrementalJob();
+  return { queued: true, message: `已把 OCR 合并 Markdown 加入 RAG 队列：${destination}` };
+}
+
 async function buildAiDraftAttachmentContext(files: Express.Multer.File[]): Promise<AiDraftAttachmentContext> {
   const textBlocks: string[] = [];
   const images: ChatContentPart[] = [];
@@ -477,20 +634,31 @@ async function buildAiDraftAttachmentContext(files: Express.Multer.File[]): Prom
     const savedPath = assertWithinWorkspace(file.path);
     if (isPdfUpload(file)) {
       try {
-        const extracted = await extractAiDraftAttachmentText(file);
-        if (extracted.trim()) {
+        const ocrOutputDir = sharedOcrOutputDir(file.path);
+        const ocrResult = await runPaddleOcrForFile(file.path, ocrOutputDir);
+        if (ocrResult.status === "ok") {
+          const autoRag = await maybeRegisterOcrMarkdownMaterial(file.path, name, ocrResult);
           const remaining = Math.max(0, aiDraftMaxExtractedCharsTotal - extractedChars);
-          const clipped = truncateForPrompt(extracted, Math.min(aiDraftMaxExtractedCharsPerFile, remaining));
+          const clipped = readOcrMarkdown(ocrResult, Math.min(aiDraftMaxExtractedCharsPerFile, remaining));
           extractedChars += clipped.length;
           items.push({
             name,
             kind,
             status: "ok",
-            message: `上传成功，已保存到学生目录，并提取 ${clipped.length} 个字符供草稿分析。`,
+            message: `上传成功，已保存到学生目录，并通过 PaddleOCR 提取 ${clipped.length} 个字符供草稿分析。${autoRag.message}`,
+            pages: ocrResult.pageCount,
             size: file.size,
             savedPath
           });
-          textBlocks.push(`### ${name}\n保存路径：${savedPath}\n${clipped}`);
+          textBlocks.push(
+            [
+              `### ${name}`,
+              `保存路径：${savedPath}`,
+              `OCR Markdown：${ocrResult.combinedMarkdownPath}`,
+              `RAG：${autoRag.message}`,
+              clipped
+            ].join("\n")
+          );
           continue;
         }
 
@@ -499,11 +667,12 @@ async function buildAiDraftAttachmentContext(files: Express.Multer.File[]): Prom
             name,
             kind,
             status: "warn",
-            message: "上传成功，已保存到学生目录；未提取到 PDF 文本，将由 Codex 按路径自行读取。",
+            message: `上传成功，已保存到学生目录；未提取到有效 PDF 文本，OCR 未可用：${ocrResult.message}`,
             size: file.size,
-            savedPath
+            savedPath,
+            retryable: true
           });
-          textBlocks.push(`### ${name}\n保存路径：${savedPath}\n[PDF 未提取到文本。请 Codex 按保存路径自行读取、转图片或 OCR，仅提炼草稿字段，不要正式备课。]`);
+          textBlocks.push(`### ${name}\n保存路径：${savedPath}\n[PDF 未提取到有效文本，OCR 未可用：${ocrResult.message}。草稿阶段不要卡住读取整份 PDF；请先根据用户文字生成结构化草稿，并在 notes/commonMistakes 中写明正式备课时必须按该路径继续读取考试题。]`);
           continue;
         }
 
@@ -702,6 +871,7 @@ JSON 结构必须是：
 - student.name 必须是真实姓名，不要输出“学生情况”“情况”“学生”等标签词。
 - score 只写分数和水平，例如“102分（中等）”，不要把后面的分析句子并进去。
 - desiredContent 归纳成本次课最核心主题，例如“立体几何薄弱巩固与考试 PDF 错题诊断”。
+- 用户明确给出的题目数量、每类题型数量、资料覆盖范围和顺序必须原样保留在 desiredContent 和 course.notes 中，属于硬约束。不得因为课长、学生基础或教学节奏而缩减、延期、改成条件式安排；一份 PDF 或一套资料可以供多次课使用。
 - course.notes 必须包含“本节课需要的内容总结”，至少写清：
   1. 课程定位和课长；
   2. 学生基础、性格/课堂引导要求；
@@ -794,6 +964,7 @@ function runCodexLessonDraftPrompt(prompt: string, mergeInput: string, logPrefix
   const lastMessagePath = path.join(tempUploadDir, `${logId}.last.md`);
   const args = ["exec", "-C", config.workspaceRoot, "--sandbox", "danger-full-access", "--output-last-message", lastMessagePath];
   if (config.codexModel) args.push("--model", config.codexModel);
+  if (config.codexReasoningEffort) args.push("-c", `model_reasoning_effort="${config.codexReasoningEffort}"`);
   args.push("-");
 
   const startedAt = new Date();
@@ -928,6 +1099,65 @@ function continueCodexLessonDraft(logPath: string) {
   }
 }
 
+function latestCompletedAiDraftForStudent(student: Student) {
+  if (!fs.existsSync(logsDir)) return null;
+  const cutoff = Date.now() - 2 * 24 * 60 * 60 * 1000;
+  const candidates = fs
+    .readdirSync(logsDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.startsWith("ai-draft-codex-") && entry.name.endsWith(".log"))
+    .map((entry) => {
+      const logPath = path.join(logsDir, entry.name);
+      return { logPath, mtimeMs: fs.statSync(logPath).mtimeMs };
+    })
+    .filter((entry) => entry.mtimeMs >= cutoff)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .slice(0, 40);
+
+  for (const candidate of candidates) {
+    try {
+      const logContent = fs.readFileSync(candidate.logPath, "utf8");
+      if (!logContent.includes("## parsed json source") || !logContent.includes("endedAt=")) continue;
+      const draft = parseDraftFromLog(logContent, logContent);
+      if (draft.student.name.trim() !== student.name.trim()) continue;
+      const response = draftResponse(draft);
+      const studentRoot = path.resolve(config.workspaceRoot, sanitizeFilename(student.name, "学生"));
+      const savedPdfPaths = response.course.localFiles
+        .split(/\r?\n/)
+        .map((value) => value.trim())
+        .filter((value) => {
+          const resolved = path.resolve(value);
+          return (
+            resolved.startsWith(`${studentRoot}${path.sep}`) &&
+            path.extname(resolved).toLowerCase() === ".pdf" &&
+            fs.existsSync(resolved)
+          );
+        });
+      const attachments: AiDraftAttachmentSummary = {
+        fileCount: savedPdfPaths.length,
+        imageCount: 0,
+        items: savedPdfPaths.map((savedPath) => ({
+          name: path.basename(savedPath),
+          kind: "pdf",
+          status: "ok",
+          message: "已从服务端完成记录恢复，PDF 和 OCR 结果无需重新上传。",
+          size: fs.statSync(savedPath).size,
+          savedPath,
+          retryable: false
+        }))
+      };
+      return {
+        draft: response,
+        attachments,
+        logPath: candidate.logPath,
+        completedAt: new Date(candidate.mtimeMs).toISOString()
+      };
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 function draftResponse(draft: ReturnType<typeof createLessonDraftFromText>, savedPaths: string[] = []) {
   const now = nowIso();
   const student: Student = {
@@ -1031,6 +1261,7 @@ async function createLessonDraft(
                 "用户输入通常会混合家长沟通、其他老师反馈、学生原题/错题、截图 OCR 文本、临时想法和备课要求。你需要先理解原始材料，再结构化。",
                 "student.notes 写学生长期画像，例如学习习惯、课堂状态、接受能力、沟通方式、已知背景；weakPoints 写知识薄弱点；commonMistakes 写从题目和反馈中暴露出的常错题型、典型错误、方法问题；parentNotes 写家长或其他老师的原始诉求和关注点；nextLessonSuggestion 写后续连续课建议。",
                 "desiredContent 要归纳成本次课最核心的备课主题，不能太散；course.notes 写本次备课的详细要求，必须保留题目内容或题目特征、课堂重点、讲解顺序、难度梯度、例题/变式/检测需求、产物要求、注意事项。",
+                "用户明确指定的题目数量、每类题型数量、资料覆盖范围和顺序是硬约束，必须原样保留。不得以课长、学生基础或教学节奏为理由自行减少、延期或改成条件式安排；一份 PDF 或一套资料可以供多次课使用。",
                 "如果原文只给了零散题目，你要从题目反推知识点、能力缺口和本次课应该怎么讲；如果信息不足，可以在 course.notes 里列出需要老师确认的问题，但不要编造学生事实。",
                 "course.notes 建议用短条目组织，保证正式调用 AI 备课 Agent 时可以直接作为备课任务依据。"
               ].join("\n")
@@ -1143,13 +1374,14 @@ function logRagReindex(message: string, details?: Record<string, unknown>) {
 }
 
 function runRagWorker(filePath: string) {
-  return new Promise<{ ok: boolean; error?: string }>((resolve) => {
+  return new Promise<{ ok: boolean; material?: Material; error?: string }>((resolve) => {
     const workerHeapMb = Math.max(256, Math.floor(config.ragWorkerMaxOldSpaceMb));
     const child = spawn(process.execPath, [`--max-old-space-size=${workerHeapMb}`, ragWorkerPath, filePath], {
       cwd: config.projectRoot,
       stdio: ["ignore", "pipe", "pipe"],
       env: process.env
     });
+    let stdout = "";
     let stderr = "";
     let settled = false;
     const timeout = setTimeout(() => {
@@ -1160,6 +1392,10 @@ function runRagWorker(filePath: string) {
       stderr += chunk.toString();
       if (stderr.length > 4000) stderr = stderr.slice(-4000);
     });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      if (stdout.length > 100_000) stdout = stdout.slice(-100_000);
+    });
     child.on("error", (error) => {
       settled = true;
       clearTimeout(timeout);
@@ -1169,7 +1405,17 @@ function runRagWorker(filePath: string) {
       settled = true;
       clearTimeout(timeout);
       if (code === 0) {
-        resolve({ ok: true });
+        try {
+          const line = stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) || "";
+          const parsed = JSON.parse(line) as { material?: Material };
+          if (!parsed.material) throw new Error("worker returned no material record");
+          resolve({ ok: true, material: parsed.material });
+        } catch (error) {
+          resolve({
+            ok: false,
+            error: `worker output parse failed: ${error instanceof Error ? error.message : String(error)}`
+          });
+        }
         return;
       }
       const detail = stderr.trim();
@@ -1195,11 +1441,11 @@ async function indexMaterialCandidates(candidates: string[], failures: string[])
       file: filePath
     });
     const result = await runRagWorker(filePath);
-    store.reload();
     clearRagIndexCache();
     ragReindexJob.processed += 1;
     const elapsedMs = Date.now() - startedAt;
-    if (result.ok) {
+    if (result.ok && result.material) {
+      store.upsertMaterial(result.material);
       ragReindexJob.indexed += 1;
       logRagReindex("file-indexed", {
         processed: ragReindexJob.processed,
@@ -1211,7 +1457,6 @@ async function indexMaterialCandidates(candidates: string[], failures: string[])
       const error = result.error || "索引进程失败";
       try {
         markMaterialIndexFailed(store, filePath, error);
-        store.reload();
         clearRagIndexCache();
       } catch {
         // Keep the indexing job moving even if recording the failed file fails.
@@ -1495,7 +1740,9 @@ function updateStudentFromBody(student: Student, body: Record<string, unknown>) 
     "weakPoints",
     "commonMistakes",
     "parentNotes",
-    "nextLessonSuggestion"
+    "nextLessonSuggestion",
+    "learningMemory",
+    "learningRoadmap"
   ] as const;
   for (const field of allowedStringFields) {
     if (field in body) student[field] = requiredString(body[field]);
@@ -1587,6 +1834,82 @@ app.post(
   })
 );
 
+app.get("/api/ai-drafts/lesson/recovery", requireAuth, (req, res) => {
+  const student = store.findStudent(requiredString(req.query.studentId));
+  if (!student) {
+    res.status(404).json({ error: "Student not found." });
+    return;
+  }
+  res.json({ recovery: latestCompletedAiDraftForStudent(student) });
+});
+
+app.post(
+  "/api/ai-drafts/lesson/attachments/ocr-retry",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const student = store.findStudent(requiredString(req.body.studentId));
+    if (!student) {
+      res.status(404).json({ error: "Student not found." });
+      return;
+    }
+
+    const requestedPath = requiredString(req.body.savedPath);
+    if (!requestedPath) {
+      res.status(400).json({ error: "缺少要重试的 PDF 路径。" });
+      return;
+    }
+
+    const savedPath = assertWithinWorkspace(requestedPath);
+    const studentUploadRoot = path.resolve(
+      config.workspaceRoot,
+      sanitizeFilename(student.name, "学生"),
+      "_uploads",
+      "AI草稿"
+    );
+    if (!savedPath.startsWith(`${studentUploadRoot}${path.sep}`)) {
+      res.status(403).json({ error: "只能重试该学生 AI 草稿目录内的 PDF。" });
+      return;
+    }
+    if (path.extname(savedPath).toLowerCase() !== ".pdf" || !fs.existsSync(savedPath) || !fs.statSync(savedPath).isFile()) {
+      res.status(404).json({ error: "PDF 文件不存在或格式不正确。" });
+      return;
+    }
+
+    const ocrResult = await runPaddleOcrForFile(savedPath, sharedOcrOutputDir(savedPath));
+    const size = fs.statSync(savedPath).size;
+    const name = path.basename(savedPath);
+    if (ocrResult.status !== "ok") {
+      res.json({
+        item: {
+          name,
+          kind: "pdf",
+          status: "warn",
+          message: `OCR 重试失败：${ocrResult.message}`,
+          size,
+          savedPath,
+          retryable: true
+        } satisfies AiDraftAttachmentItem
+      });
+      return;
+    }
+
+    const autoRag = await maybeRegisterOcrMarkdownMaterial(savedPath, name, ocrResult);
+    res.json({
+      item: {
+        name,
+        kind: "pdf",
+        status: "ok",
+        message: `OCR 重试成功：已提取 ${ocrResult.textChars ?? 0} 个字符。${autoRag.message}`,
+        pages: ocrResult.pageCount,
+        size,
+        savedPath,
+        retryable: false
+      } satisfies AiDraftAttachmentItem,
+      ocrMarkdownPath: ocrResult.combinedMarkdownPath
+    });
+  })
+);
+
 app.post("/api/ai-drafts/lesson/commit", requireAuth, (req, res) => {
   const studentInput = (req.body.student || {}) as Record<string, unknown>;
   const courseInput = (req.body.course || {}) as Record<string, unknown>;
@@ -1664,7 +1987,7 @@ app.get("/api/students/:studentId/courses", requireAuth, (req, res) => {
   res.json({
     courses: store.data.courses
       .filter((course) => course.studentId === student.id)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .sort((a, b) => courseTimelineValue(b) - courseTimelineValue(a) || b.createdAt.localeCompare(a.createdAt))
       .map(publicCourse)
   });
 });
@@ -1745,6 +2068,33 @@ function updateCourseFromBody(course: Course, body: Record<string, unknown>) {
   course.updatedAt = nowIso();
 }
 
+function courseTimelineValue(course: Course) {
+  return Date.parse(course.lessonTime || course.createdAt || course.updatedAt || "") || 0;
+}
+
+function postClassString(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizePostClassSummary(input: unknown, fallback?: CoursePostClassSummary): CoursePostClassSummary {
+  const body = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const now = nowIso();
+  const status = body.status === "confirmed" ? "confirmed" : body.status === "draft" ? "draft" : fallback?.status || "draft";
+  return {
+    status,
+    linkedPrevious: "linkedPrevious" in body ? postClassString(body.linkedPrevious) : fallback?.linkedPrevious || "",
+    learned: "learned" in body ? postClassString(body.learned) : fallback?.learned || "",
+    mastered: "mastered" in body ? postClassString(body.mastered) : fallback?.mastered || "",
+    unresolved: "unresolved" in body ? postClassString(body.unresolved) : fallback?.unresolved || "",
+    commonMistakes: "commonMistakes" in body ? postClassString(body.commonMistakes) : fallback?.commonMistakes || "",
+    homework: "homework" in body ? postClassString(body.homework) : fallback?.homework || "",
+    nextLessonSuggestion: "nextLessonSuggestion" in body ? postClassString(body.nextLessonSuggestion) : fallback?.nextLessonSuggestion || "",
+    teacherNotes: "teacherNotes" in body ? postClassString(body.teacherNotes) : fallback?.teacherNotes || "",
+    updatedAt: now,
+    confirmedAt: status === "confirmed" ? fallback?.confirmedAt : undefined
+  };
+}
+
 app.get("/api/courses/:courseId", requireAuth, (req, res) => {
   const course = store.findCourse(routeParam(req, "courseId"));
   if (!course) {
@@ -1799,7 +2149,55 @@ app.post("/api/courses/:courseId/run", requireAuth, (req, res) => {
   res.json({ job, course: publicCourse(course) });
 });
 
-app.post("/api/courses/:courseId/refine", requireAuth, (req, res) => {
+app.post(
+  "/api/courses/:courseId/refine",
+  requireAuth,
+  upload.array("files"),
+  asyncHandler(async (req, res) => {
+    const files = (req.files || []) as Express.Multer.File[];
+    const course = store.findCourse(routeParam(req, "courseId"));
+    if (!course) {
+      removeTempUploadFiles(files);
+      res.status(404).json({ error: "Course not found." });
+      return;
+    }
+    const runningJob = course.jobId ? store.findJob(course.jobId) : null;
+    if (runningJob?.status === "running" || runningJob?.status === "queued") {
+      removeTempUploadFiles(files);
+      res.status(409).json({ error: "This course already has a running job." });
+      return;
+    }
+    const requestedInstruction = requiredString(req.body.instruction);
+    if (!requestedInstruction && files.length === 0) {
+      res.status(400).json({ error: "请填写补充要求或上传需要补充的资料。" });
+      return;
+    }
+
+    const attachmentsDir = path.join(course.outputDir, "_attachments", "补充资料", timestampSlug());
+    fs.mkdirSync(attachmentsDir, { recursive: true });
+    const saved: string[] = [];
+    try {
+      for (const file of files) {
+        const destination = uniqueNestedDestination(attachmentsDir, file.originalname || "upload");
+        await fs.promises.rename(file.path, destination);
+        saved.push(destination);
+      }
+    } finally {
+      removeTempUploadFiles(files);
+    }
+    appendCourseLocalFiles(course, saved);
+    const instruction =
+      requestedInstruction || "请读取本次上传的补充资料，在保留现有成果的基础上补充并完善本节备课内容。";
+    const job = createCodexJob(store, course, {
+      refineInstruction: instruction,
+      supplementalFiles: saved
+    });
+    runCodexJob(store, job.id);
+    res.json({ job, files: saved, course: publicCourse(course) });
+  })
+);
+
+app.post("/api/courses/:courseId/pdf-image-refine", requireAuth, (req, res) => {
   const course = store.findCourse(routeParam(req, "courseId"));
   if (!course) {
     res.status(404).json({ error: "Course not found." });
@@ -1810,12 +2208,29 @@ app.post("/api/courses/:courseId/refine", requireAuth, (req, res) => {
     res.status(409).json({ error: "This course already has a running job." });
     return;
   }
+  const pages = requiredString(req.body.pages).slice(0, 200);
   const instruction = requiredString(req.body.instruction);
-  if (!instruction) {
-    res.status(400).json({ error: "请填写需要补充或修改的要求。" });
+  if (!pages) {
+    res.status(400).json({ error: "请填写要修改的 PDF 页码，例如 4 或 3,7-8。" });
     return;
   }
-  const job = createCodexJob(store, course, { refineInstruction: instruction });
+  if (!instruction) {
+    res.status(400).json({ error: "请填写 PDF 图形/版面的具体修改要求。" });
+    return;
+  }
+  const student = store.findStudent(course.studentId);
+  const texPath = path.join(course.outputDir, "_work", "课堂讲义.tex");
+  const workPdfPath = path.join(course.outputDir, "_work", "课堂讲义.pdf");
+  const finalPdfPath = path.join(course.outputDir, courseClassroomPdfFileName(course, student?.name));
+  if (!fs.existsSync(texPath) || (!fs.existsSync(workPdfPath) && !fs.existsSync(finalPdfPath))) {
+    res.status(400).json({ error: "当前课程还没有可修订的课堂讲义 TeX/PDF，请先完成 PDF 生成。" });
+    return;
+  }
+  const job = createCodexJob(store, course, {
+    kind: "pdf-image-refine",
+    pdfRefinePages: pages,
+    refineInstruction: instruction
+  });
   runCodexJob(store, job.id);
   res.json({ job, course: publicCourse(course) });
 });
@@ -1921,6 +2336,94 @@ app.post("/api/courses/:courseId/quality", requireAuth, (req, res) => {
   res.json({ quality, job });
 });
 
+app.get("/api/courses/:courseId/post-class", requireAuth, (req, res) => {
+  const course = store.findCourse(routeParam(req, "courseId"));
+  if (!course) {
+    res.status(404).json({ error: "Course not found." });
+    return;
+  }
+  recoverCourseOutputForRequest(course);
+  const summary = course.postClassSummary || buildPostClassSummaryDraft(course);
+  res.json({ summary, course: publicCourse(course) });
+});
+
+app.post("/api/courses/:courseId/post-class/draft", requireAuth, (req, res) => {
+  const course = store.findCourse(routeParam(req, "courseId"));
+  if (!course) {
+    res.status(404).json({ error: "Course not found." });
+    return;
+  }
+  if (courseHasActiveJob(course)) {
+    res.status(409).json({ error: "该课程正在生成，暂时不能更新课后沉淀。" });
+    return;
+  }
+  recoverCourseOutputForRequest(course);
+  course.postClassSummary = buildPostClassSummaryDraft(course);
+  course.updatedAt = nowIso();
+  store.save();
+  res.json({ summary: course.postClassSummary, course: publicCourse(course) });
+});
+
+app.patch("/api/courses/:courseId/post-class", requireAuth, (req, res) => {
+  const course = store.findCourse(routeParam(req, "courseId"));
+  if (!course) {
+    res.status(404).json({ error: "Course not found." });
+    return;
+  }
+  if (courseHasActiveJob(course)) {
+    res.status(409).json({ error: "该课程正在生成，暂时不能更新课后沉淀。" });
+    return;
+  }
+  course.postClassSummary = normalizePostClassSummary(req.body.summary || req.body, course.postClassSummary);
+  course.updatedAt = nowIso();
+  store.save();
+  res.json({ summary: course.postClassSummary, course: publicCourse(course) });
+});
+
+app.post("/api/courses/:courseId/post-class/confirm", requireAuth, (req, res) => {
+  const course = store.findCourse(routeParam(req, "courseId"));
+  if (!course) {
+    res.status(404).json({ error: "Course not found." });
+    return;
+  }
+  if (courseHasActiveJob(course)) {
+    res.status(409).json({ error: "该课程正在生成，暂时不能确认课后沉淀。" });
+    return;
+  }
+  const student = store.findStudent(course.studentId);
+  if (!student) {
+    res.status(404).json({ error: "Student not found." });
+    return;
+  }
+  const summary = normalizePostClassSummary(req.body.summary || req.body, course.postClassSummary || buildPostClassSummaryDraft(course));
+  summary.status = "confirmed";
+  summary.confirmedAt = nowIso();
+  course.postClassSummary = summary;
+  course.updatedAt = nowIso();
+  applyPostClassSummaryToStudent(student, course, summary);
+  store.save();
+  res.json({ summary, course: publicCourse(course), student });
+});
+
+app.post("/api/courses/:courseId/feishu/notify", requireAuth, async (req, res) => {
+  const course = store.findCourse(routeParam(req, "courseId"));
+  if (!course) {
+    res.status(404).json({ error: "Course not found." });
+    return;
+  }
+  if (courseHasActiveJob(course)) {
+    res.status(409).json({ error: "该课程正在生成，暂时不能重发飞书消息。" });
+    return;
+  }
+
+  try {
+    const notification = await resendCourseFeishuNotification(store, course);
+    res.json({ course: publicCourse(course), notification });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 app.get("/api/jobs/:jobId", requireAuth, (req, res) => {
   const job = store.findJob(routeParam(req, "jobId"));
   if (!job) {
@@ -1952,7 +2455,7 @@ app.post("/api/jobs/:jobId/continue", requireAuth, (req, res) => {
     res.status(500).json({ error: "继续生成任务创建失败。" });
     return;
   }
-  runCodexJob(store, result.job.id);
+  if (!result.recovered) runCodexJob(store, result.job.id);
   res.json({ job: result.job, course: publicCourse(result.course) });
 });
 

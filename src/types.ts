@@ -64,6 +64,8 @@ export interface Student {
   commonMistakes?: string;
   parentNotes?: string;
   nextLessonSuggestion?: string;
+  learningMemory?: string;
+  learningRoadmap?: string;
   courseCount?: number;
   createdAt: string;
   updatedAt: string;
@@ -88,6 +90,7 @@ export interface GenerationQuality {
 
 export type CourseType = "trial" | "formal";
 export type CourseStatus = "draft" | "queued" | "running" | "completed" | "failed" | "canceled";
+export type JobKind = "lesson" | "pdf-image-refine";
 
 export interface Course {
   id: string;
@@ -108,19 +111,54 @@ export interface Course {
   outputDir: string;
   status: CourseStatus;
   jobId?: string;
+  feishuSync?: CourseFeishuSync;
+  postClassSummary?: CoursePostClassSummary;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CoursePostClassSummary {
+  status?: "draft" | "confirmed";
+  linkedPrevious?: string;
+  learned?: string;
+  mastered?: string;
+  unresolved?: string;
+  commonMistakes?: string;
+  homework?: string;
+  nextLessonSuggestion?: string;
+  teacherNotes?: string;
+  updatedAt?: string;
+  confirmedAt?: string;
+}
+
+export interface CourseFeishuSync {
+  folderToken?: string;
+  folderUrl?: string;
+  calendarEventId?: string;
+  calendarId?: string;
+  lastJobId?: string;
+  lastSyncedAt?: string;
+  pdfFileToken?: string;
+  pdfFileUrl?: string;
+  notificationStatus?: "sent" | "failed" | "skipped";
+  notificationDetail?: string;
+  notificationAttemptedAt?: string;
+  notificationSentAt?: string;
+  lastNotificationText?: string;
 }
 
 export interface Job {
   id: string;
   courseId: string;
+  kind?: JobKind;
   status: "queued" | "running" | "completed" | "failed" | "canceled";
   logPath: string;
   lastMessagePath: string;
   command: string;
   runner: "local" | "ssh";
   refineInstruction?: string;
+  supplementalFiles?: string[];
+  pdfRefinePages?: string;
   quality?: GenerationQuality;
   exitCode?: number | null;
   error?: string;

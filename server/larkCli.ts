@@ -46,6 +46,15 @@ export interface FeishuMessageTarget {
   receiveId: string;
 }
 
+interface AuthStatusData {
+  identities?: {
+    user?: {
+      openId?: string;
+      open_id?: string;
+    };
+  };
+}
+
 function larkCliBinary() {
   const localBin = path.join(appConfig.projectRoot, "node_modules", ".bin", process.platform === "win32" ? "lark-cli.cmd" : "lark-cli");
   return fs.existsSync(localBin) ? localBin : "lark-cli";
@@ -63,6 +72,11 @@ function collectScopes(value: unknown, scopes = new Set<string>()) {
   }
   const record = value as Record<string, unknown>;
   if (typeof record.subject === "string" && record.subject.includes(":")) scopes.add(record.subject);
+  if (Array.isArray(record.missing_scopes)) {
+    for (const scope of record.missing_scopes) {
+      if (typeof scope === "string" && scope.includes(":")) scopes.add(scope);
+    }
+  }
   if (Array.isArray(record.permission_violations)) collectScopes(record.permission_violations, scopes);
   if (record.error) collectScopes(record.error, scopes);
   if (record.detail) collectScopes(record.detail, scopes);
@@ -189,6 +203,11 @@ export async function sendTextWithCurrentUserLarkCli(target: FeishuMessageTarget
   return runLarkCliWithCurrentAuth(args, { timeoutMs: 60_000 });
 }
 
+export async function getCurrentUserOpenIdWithLarkCli() {
+  const result = await runLarkCliWithCurrentAuth<AuthStatusData>(["auth", "status", "--json"], { timeoutMs: 60_000 });
+  return result.data.identities?.user?.openId || result.data.identities?.user?.open_id || "";
+}
+
 export async function importMarkdownWithLarkCli(markdownPath: string, folderToken = "") {
   const file = fileArg(markdownPath);
   const name = path.basename(markdownPath, path.extname(markdownPath));
@@ -198,9 +217,10 @@ export async function importMarkdownWithLarkCli(markdownPath: string, folderToke
   return runLarkCliWithCurrentAuth(args, { cwd: file.cwd, timeoutMs: 180_000 });
 }
 
-export async function uploadFileWithLarkCli(filePath: string, folderToken = "") {
+export async function uploadFileWithLarkCli(filePath: string, folderToken = "", fileToken = "") {
   const file = fileArg(filePath);
   const args = ["drive", "+upload", "--as", "user", "--file", file.relative, "--name", path.basename(filePath)];
+  if (fileToken) args.push("--file-token", fileToken);
   if (folderToken) args.push("--folder-token", folderToken);
   args.push("--format", "json");
   return runLarkCliWithCurrentAuth(args, { cwd: file.cwd, timeoutMs: 180_000 });

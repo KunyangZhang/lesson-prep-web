@@ -1,5 +1,6 @@
 export type CourseType = "trial" | "formal";
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "canceled";
+export type JobKind = "lesson" | "pdf-image-refine";
 export type CourseStatus = "draft" | "queued" | "running" | "completed" | "failed" | "canceled";
 
 export interface User {
@@ -18,6 +19,8 @@ export interface Student {
   commonMistakes?: string;
   parentNotes?: string;
   nextLessonSuggestion?: string;
+  learningMemory?: string;
+  learningRoadmap?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -59,8 +62,23 @@ export interface Course {
   status: CourseStatus;
   jobId?: string;
   feishuSync?: CourseFeishuSync;
+  postClassSummary?: CoursePostClassSummary;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CoursePostClassSummary {
+  status?: "draft" | "confirmed";
+  linkedPrevious?: string;
+  learned?: string;
+  mastered?: string;
+  unresolved?: string;
+  commonMistakes?: string;
+  homework?: string;
+  nextLessonSuggestion?: string;
+  teacherNotes?: string;
+  updatedAt?: string;
+  confirmedAt?: string;
 }
 
 export interface CourseFeishuSync {
@@ -70,11 +88,19 @@ export interface CourseFeishuSync {
   calendarId?: string;
   lastJobId?: string;
   lastSyncedAt?: string;
+  pdfFileToken?: string;
+  pdfFileUrl?: string;
+  notificationStatus?: "sent" | "failed" | "skipped";
+  notificationDetail?: string;
+  notificationAttemptedAt?: string;
+  notificationSentAt?: string;
+  lastNotificationText?: string;
 }
 
 export interface Job {
   id: string;
   courseId: string;
+  kind?: JobKind;
   status: JobStatus;
   logPath: string;
   lastMessagePath: string;
@@ -82,12 +108,27 @@ export interface Job {
   args: string[];
   runner: "local" | "ssh";
   refineInstruction?: string;
+  supplementalFiles?: string[];
+  pdfRefinePages?: string;
+  artifactBefore?: JobArtifactSnapshot;
+  artifactAfter?: JobArtifactSnapshot;
   quality?: GenerationQuality;
   exitCode?: number | null;
   error?: string;
   createdAt: string;
   startedAt?: string;
   endedAt?: string;
+}
+
+export interface JobArtifactSnapshot {
+  workPdfPath?: string;
+  workPdfSha256?: string;
+  workPdfSize?: number;
+  workPdfMtime?: string;
+  finalPdfPath?: string;
+  finalPdfSha256?: string;
+  finalPdfSize?: number;
+  finalPdfMtime?: string;
 }
 
 export interface Material {

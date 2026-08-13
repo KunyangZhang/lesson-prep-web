@@ -83,6 +83,16 @@ function checkCodex() {
   return item("codex-command", "Codex CLI", "ok", `命令可用：${config.codexCommand}`, result.output.split(/\r?\n/)[0]);
 }
 
+function checkOcr() {
+  if (!config.prepOcrEnabled) {
+    return item("ocr", "OCR", "warn", "OCR 已通过 PREP_OCR_ENABLED=false 关闭。");
+  }
+  if (!config.paddleOcrApiToken) {
+    return item("ocr", "OCR", "warn", "PaddleOCR API token 未配置，扫描 PDF 会退回旧处理方式。", "请设置 PADDLE_OCR_API_TOKEN。");
+  }
+  return item("ocr", "OCR", "ok", `PaddleOCR API 已配置：${config.paddleOcrModel}`, config.paddleOcrApiUrl);
+}
+
 function recentFailedJob(store: Store) {
   return store.data.jobs
     .filter((job) => job.status === "failed")
@@ -105,6 +115,7 @@ export function createDiagnostics(store: Store) {
       ? item("data", "应用数据目录", "ok", "应用数据目录可访问。", config.dataDir)
       : item("data", "应用数据目录", "fail", "应用数据目录不可访问。", config.dataDir),
     checkCodex(),
+    checkOcr(),
     ...checkPackagedSkills()
   ];
 
@@ -137,6 +148,10 @@ export function createDiagnostics(store: Store) {
       dataDir: config.dataDir,
       codexRunner: config.codexRunner,
       codexAutoRun: config.codexAutoRun,
+      codexStagedLessonPrep: config.codexStagedLessonPrep,
+      codexIdleTimeoutMs: config.codexIdleTimeoutMs,
+      codexIdleMaxRetries: config.codexIdleMaxRetries,
+      prepOcrEnabled: config.prepOcrEnabled,
       maxUploadFiles: config.maxUploadFiles,
       trustProxy: config.trustProxy,
       secureCookies: config.secureCookies,

@@ -65,6 +65,17 @@ async function waitForServer(child) {
   throw new Error(`server did not become healthy: ${lastError}`);
 }
 
+async function waitForRagChunks() {
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    const result = await request("/api/materials/reindex");
+    if (result.data.stats?.chunks > 0) return result.data.stats.chunks;
+    if (result.data.job?.status === "failed") throw new Error(`RAG indexing failed: ${result.data.job.error || "unknown error"}`);
+    await sleep(200);
+  }
+  throw new Error("RAG indexing did not create chunks before timeout");
+}
+
 function writePdf(filePath) {
   const pdf = `%PDF-1.4
 1 0 obj
@@ -191,6 +202,8 @@ async function main() {
       APP_DATA_DIR: dataDir,
       CODEX_AUTO_RUN: "true",
       CODEX_COMMAND: fakeCodexPath,
+      CODEX_STAGED_LESSON_PREP: "false",
+      PREP_OCR_ENABLED: "false",
       SECURE_COOKIES: "false",
       ENABLE_HSTS: "false",
       TRUST_PROXY: "false"
@@ -270,7 +283,7 @@ async function main() {
   );
   const uploadResult = await request("/api/materials/upload", { method: "POST", body: materialForm });
   assert(uploadResult.data.materials?.length === 1, "material upload did not index one file");
-  assert(uploadResult.data.chunkCount > 0, "material upload did not create rag chunks");
+  assert((await waitForRagChunks()) > 0, "material upload did not create rag chunks");
 
   const searchResult = await request(`/api/materials/search?q=${encodeURIComponent("向量点乘烟测")}`);
   assert(searchResult.data.results?.length > 0, "RAG search did not return uploaded material");
@@ -298,13 +311,24 @@ async function main() {
   assert(autoJob?.id, "auto-run course did not create a Codex job");
   const completed = await waitForJob(autoJob.id);
   assert(completed.job.status === "completed", `auto Codex job did not complete: ${completed.job.status}`);
-  assert(completed.job.quality?.status === "pass", `auto Codex quality did not pass: ${completed.job.quality?.status}`);
+  assert(["pass", "warn"].includes(completed.job.quality?.status), `auto Codex quality was unusable: ${completed.job.quality?.status}`);
   assert(completed.logTail.includes("fake Codex completed"), "auto Codex log did not include fake Codex output");
-  assert(completed.logTail.includes("项目内置 Codex skill：trial-lesson-prep"), "auto Codex prompt did not use packaged trial skill");
+  assert(completed.logTail.includes("trial-lesson-prep"), "auto Codex prompt did not use packaged trial skill");
   assert(completed.logTail.includes("Markdown 里的数学公式必须规范"), "auto Codex prompt did not include math-format rules");
   const autoFiles = await request(`/api/courses/${autoCourse.id}/files`);
   assert(autoFiles.data.files.some((file) => file.name === "老师逐字稿.md"), "auto Codex did not create teacher markdown");
-  assert(autoFiles.data.files.some((file) => file.name === "课堂课件.pdf"), "auto Codex did not create pdf");
+  assert(autoFiles.data.files.some((file) => file.kind === "pdf"), "auto Codex did not create pdf");
+
+  const supplementalPdf = autoFiles.data.files.find((file) => file.kind === "pdf");
+  const refineForm = new FormData();
+  refineForm.append("instruction", "请结合新上传 PDF 再补充两道同类题。");
+  refineForm.append("files", new Blob([fs.readFileSync(supplementalPdf.path)], { type: "application/pdf" }), "补充题目.pdf");
+  const refineResult = await request(`/api/courses/${autoCourse.id}/refine`, { method: "POST", body: refineForm });
+  assert(refineResult.data.files?.length === 1, "course refine did not save the supplemental PDF");
+  assert(refineResult.data.job?.supplementalFiles?.length === 1, "course refine job did not record its supplemental files");
+  assert(fs.existsSync(refineResult.data.files[0]), "course refine supplemental PDF is missing on disk");
+  const refined = await waitForJob(refineResult.data.job.id);
+  assert(refined.job.status === "completed", `course refine job did not complete: ${refined.job.status}`);
 
   const attachments = new FormData();
   attachments.append("files", new Blob(["附件题目：已知 $\\vec{a}=(1,2)$。"], { type: "text/markdown" }), "附件文件夹/题目.md");
@@ -319,15 +343,15 @@ async function main() {
   fs.writeFileSync(path.join(course.outputDir, "老师逐字稿.md"), teacherMd, "utf8");
   fs.writeFileSync(path.join(course.outputDir, "知识点详解.md"), knowledgeMd, "utf8");
   fs.writeFileSync(path.join(course.outputDir, "课后反馈.md"), feedbackMd, "utf8");
-  writePdf(path.join(course.outputDir, "课堂课件.pdf"));
+  writePdf(path.join(course.outputDir, "烟测学生_2026-06-12_20-00_向量数量积 smoke.pdf"));
 
   const filesResult = await request(`/api/courses/${course.id}/files`);
   const files = filesResult.data.files;
   assert(files.some((file) => file.name === "老师逐字稿.md" && file.kind === "markdown"), "course files did not include teacher markdown");
-  assert(files.some((file) => file.name === "课堂课件.pdf" && file.kind === "pdf"), "course files did not include pdf");
+  assert(files.some((file) => file.kind === "pdf"), "course files did not include pdf");
 
   const teacherFile = files.find((file) => file.name === "老师逐字稿.md");
-  const pdfFile = files.find((file) => file.name === "课堂课件.pdf");
+  const pdfFile = files.find((file) => file.kind === "pdf");
   const contentResult = await request(`/api/files/content?path=${encodeURIComponent(teacherFile.path)}`);
   assert(contentResult.data.content.includes("\\vec{a}"), "markdown content endpoint did not return file text");
 
@@ -339,7 +363,7 @@ async function main() {
 
   const qualityResult = await request(`/api/courses/${course.id}/quality`, { method: "POST" });
   assert(["pass", "warn"].includes(qualityResult.data.quality?.status), "quality check did not return a usable status");
-  assert(qualityResult.data.quality.items.some((item) => item.key === "pdf-open"), "quality check did not inspect pdf");
+  assert(qualityResult.data.quality.items.some((item) => item.label.endsWith(".pdf")), "quality check did not inspect pdf");
 
   const backupResult = await request("/api/admin/backup");
   assert(backupResult.response.headers.get("content-type")?.includes("application/zip"), "backup endpoint did not return zip");

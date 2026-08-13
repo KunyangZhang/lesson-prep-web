@@ -9,7 +9,9 @@ if (!filePath) {
 }
 
 try {
-  const store = new Store();
+  // The parent server owns app-db.json. The worker only updates the SQLite
+  // index and returns the material record for the parent to persist.
+  const store = new Store(undefined, { persist: false });
   const material = await indexMaterialFile(store, filePath);
   process.stdout.write(JSON.stringify({ ok: true, material }) + "\n");
   process.exit(0);

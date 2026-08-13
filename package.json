@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch server/index.ts",
+    "upload": "node scripts/upload-server.mjs",
     "build": "vite build && tsc -p tsconfig.server.json",
     "start": "node dist/server/index.js",
+    "test": "tsx --test server/*.test.ts",
     "check": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
     "deploy:check": "node scripts/deploy-check.mjs",
     "smoke": "node scripts/smoke.mjs",

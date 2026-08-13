@@ -48,7 +48,7 @@ npm run build
 npm run smoke
 ```
 
-`smoke` 会用临时工作区和临时数据目录启动一套服务，验证初始化账号、登录、学生/课程增删改、资料上传、RAG 检索、课程附件、Markdown/PDF 预览入口、质量检查、备份和诊断接口。它还会用一个临时的 fake Codex 命令验证“创建课程后后台自动启动 Codex 任务、接收 prompt、生成四个核心文件、完成质量检查”的链路，不会写入真实备课数据。
+`smoke` 会用临时工作区和临时数据目录启动一套服务，验证初始化账号、登录、学生/课程增删改、资料上传、RAG 检索、课程附件、Markdown/PDF 预览入口、质量检查、备份和诊断接口。它还会用一个临时的 fake Codex 命令验证“创建课程后后台自动启动 Codex 任务、接收 prompt、生成核心文件、完成质量检查”的链路，不会写入真实备课数据。正式课固定生成原版学生课堂 PDF 和新增教师授课一体版 PDF；试听课保持原有单 PDF 交付。
 
 项目已经内置两个备课 skill：
 
@@ -108,7 +108,7 @@ bash scripts/server-setup.sh --smoke
 npm run codex:smoke
 ```
 
-这个命令会用临时工作区启动一套隔离服务，真实调用服务器上的 `codex exec`，验证后台任务是否能生成四个核心文件。它会消耗一次真实 Codex 调用，所以不要放进常规自动化里。
+这个命令会用临时工作区启动一套隔离服务，真实调用服务器上的 `codex exec`，验证后台任务是否能生成所需核心文件。它会消耗一次真实 Codex 调用，所以不要放进常规自动化里。
 
 生产长期运行仍建议使用 `deploy/systemd/lesson-prep-web.service.example`，不要长期依赖 SSH 终端里的 `npm start`。
 
@@ -124,11 +124,19 @@ GET /api/health
 - `PREP_MATERIAL_ROOT`: 资料库根目录，默认可设为 `${PREP_WORKSPACE}/资料库`。
 - `APP_DATA_DIR`: 应用数据库、日志和索引目录。
 - `CODEX_COMMAND`: Codex CLI 命令，默认 `codex`。
+- `CODEX_MODEL`: Codex 调用模型，默认 `gpt-5.6-sol`。
+- `CODEX_REASONING_EFFORT`: Codex 推理强度，默认 `high`。
 - `CODEX_AUTO_RUN`: 是否允许课程创建后自动调用 Codex，默认 `true`。
+- `CODEX_STAGED_LESSON_PREP`: 是否把正式备课拆成独立 Codex 阶段，默认 `true`。开启后会先做 OCR/题目提取；阶段 1 完成后，双 PDF 分支与 Markdown 交付物分支并行生成。逐字稿和知识点详解按统一题序生成，不等待 PDF 页码映射。
+- `CODEX_IDLE_TIMEOUT_MS`: Codex 连续无 stdout/stderr 输出多久后由 watchdog 终止，默认 `480000`（8 分钟）；设为 `0` 可关闭。
+- `CODEX_IDLE_MAX_RETRIES`: watchdog 超时后自动重试次数，默认 `1`。用户主动取消不会触发重试。
 - `CODEX_RUNNER`: `local` 或 `ssh`。网页部署在 Linux 服务器上时用 `local` 即可。
 - `CODEX_SSH_HOST` / `CODEX_SSH_USER` / `CODEX_SSH_PORT` / `CODEX_SSH_KEY`: `CODEX_RUNNER=ssh` 时用于远程调用 Linux 服务器上的 Codex。
 - `CODEX_REMOTE_WORKSPACE`: Linux 服务器上的备课工作区路径。SSH 模式下，prompt 里的工作区和输出目录会映射到这个路径。
 - `CODEX_REMOTE_PROJECT_ROOT`: Linux 服务器上的 `lesson-prep-web` 项目路径。SSH 模式下如果项目目录不在 `CODEX_REMOTE_WORKSPACE` 里面，需要设置它，Codex 才能读到项目内置 skill。
+- `PREP_OCR_ENABLED`: 是否启用 OCR 预处理，默认 `true`。
+- `PADDLE_OCR_API_URL` / `PADDLE_OCR_API_TOKEN` / `PADDLE_OCR_MODEL`: PaddleOCR API 配置。不要把 token 提交到代码仓库。OCR 会用于 AI 草稿 PDF 上传和正式备课前的本地资料预处理；资料类 PDF 会把 OCR 后的合并 Markdown 自动排队进入 RAG，而不是把原 PDF 直接交给 RAG 解析。
+- `PADDLE_OCR_POLL_INTERVAL_MS` / `PADDLE_OCR_TIMEOUT_MS` / `PADDLE_OCR_MAX_FILES`: OCR 轮询间隔、超时和单次任务最多处理文件数。
 - `MAX_UPLOAD_FILES`: 单次上传最多文件数，默认 `5000`。上传大文件夹提示文件太多时调大这个值。
 - `MAX_UPLOAD_FILE_MB`: 单个上传文件大小上限，默认 `500` MB。上传大 PDF/压缩包提示文件过大时调大这个值；Nginx 部署时还要同步调大 `client_max_body_size`。
 - `RAG_MAX_REINDEX_FILES`: 重建索引时最多扫描文件数，默认 `300`。
@@ -164,7 +172,7 @@ GET /api/health
 - 在固定父目录下按学生/课程创建子文件夹。
 - 将 `老师逐字稿.md`、`知识点详解.md`、`课后反馈.md` 导入为飞书新版文档。
 - 将 `课堂课件.pdf` 上传为云空间文件。
-- 如果课程时间有效，创建飞书日程，并把本地目录、飞书目录和四个文件结果写进日程描述。
+- 如果课程时间有效，创建飞书日程，并把本地目录、飞书目录和核心文件结果写进日程描述。
 - 通过 `lark-cli im +messages-send --as user` 把同步结果发给 `FEISHU_NOTIFY_OPEN_ID`。
 
 服务器运行前先在同一用户下完成一次登录：

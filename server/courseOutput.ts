@@ -2,10 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
 import { assertWithinWorkspace, listCourseFiles } from "./files.js";
-import { nowIso } from "./store.js";
+import { fitFilenameComponent, maxSafeFilenameBytes, nowIso, sanitizeFilename, truncateUtf8Bytes } from "./store.js";
 import type { Course, Job } from "./types.js";
 
 export const legacyClassroomPdfFileName = "课堂课件.pdf";
+export const homeworkPdfFileName = "课后作业.pdf";
+export const homeworkAnswerPdfFileName = "课后作业参考答案.pdf";
 export const fixedCoreOutputFileNames = ["老师逐字稿.md", "知识点详解.md", "课后反馈.md"] as const;
 
 interface RecoveryCandidate {
@@ -21,15 +23,6 @@ export interface CourseOutputRecoveryResult {
   reason?: string;
 }
 
-function sanitizeFilename(value: string, fallback: string) {
-  const cleaned = value
-    .replace(/[\\/:*?"<>|]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 80);
-  return cleaned || fallback;
-}
-
 function lessonDateSlug(lessonTime: string) {
   if (lessonTime) return lessonTime.replace("T", "_").replace(/:/g, "-").slice(0, 16);
   const now = new Date();
@@ -42,31 +35,63 @@ function fallbackStudentName(course: Course) {
   return parent && parent !== "." ? parent : "学生";
 }
 
+function stableCourseTimeSlug(course: Course) {
+  if (course.lessonTime) return lessonDateSlug(course.lessonTime);
+  const outputDirPrefix = path.basename(course.outputDir).match(/^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2})/);
+  if (outputDirPrefix) return outputDirPrefix[1];
+  return lessonDateSlug(course.createdAt);
+}
+
 export function courseClassroomPdfFileName(course: Course, studentName?: string) {
-  const name = sanitizeFilename(studentName || fallbackStudentName(course), "学生");
-  const time = lessonDateSlug(course.lessonTime);
+  const name = sanitizeFilename(studentName || fallbackStudentName(course), "学生", 60);
+  const time = stableCourseTimeSlug(course);
   const topic = sanitizeFilename(course.desiredContent || "备课", "备课");
-  return `${name}_${time}_${topic}.pdf`;
+  const teachingSuffix = "_授课一体版.pdf";
+  const sharedStemBytes = maxSafeFilenameBytes - Buffer.byteLength(teachingSuffix, "utf8");
+  const sharedStem = truncateUtf8Bytes(`${name}_${time}_${topic}`, sharedStemBytes).trimEnd();
+  return fitFilenameComponent(sharedStem, ".pdf");
+}
+
+export function courseTeachingPdfFileName(course: Course, studentName?: string) {
+  const classroomStem = courseClassroomPdfFileName(course, studentName).replace(/\.pdf$/i, "");
+  return fitFilenameComponent(classroomStem, "_授课一体版.pdf");
 }
 
 export function coreOutputFileNames(course: Course, studentName?: string) {
-  return ["老师逐字稿.md", "知识点详解.md", courseClassroomPdfFileName(course, studentName), "课后反馈.md"];
+  const outputs = ["老师逐字稿.md", "知识点详解.md", courseClassroomPdfFileName(course, studentName)];
+  if (course.type === "formal") {
+    outputs.push(courseTeachingPdfFileName(course, studentName), homeworkPdfFileName, homeworkAnswerPdfFileName);
+  }
+  outputs.push("课后反馈.md");
+  return outputs;
 }
 
 function coreOutputSlots(course: Course, studentName?: string) {
   const pdfName = courseClassroomPdfFileName(course, studentName);
-  return [
+  const slots: Array<{ name: string; aliases: string[] }> = [
     { name: "老师逐字稿.md", aliases: [] },
     { name: "知识点详解.md", aliases: [] },
     { name: pdfName, aliases: pdfName === legacyClassroomPdfFileName ? [] : [legacyClassroomPdfFileName] },
-    { name: "课后反馈.md", aliases: [] }
   ];
+  if (course.type === "formal") {
+    slots.push({ name: courseTeachingPdfFileName(course, studentName), aliases: ["授课一体版.pdf"] });
+    slots.push({ name: homeworkPdfFileName, aliases: [] });
+    slots.push({ name: homeworkAnswerPdfFileName, aliases: [] });
+  }
+  slots.push({ name: "课后反馈.md", aliases: [] });
+  return slots;
 }
 
 export function ensureCourseClassroomPdfFileName(course: Course, studentName?: string) {
   const expected = courseClassroomPdfFileName(course, studentName);
   const expectedPath = path.join(course.outputDir, expected);
   if (fs.existsSync(expectedPath)) return expected;
+
+  const workPdfPath = path.join(course.outputDir, "_work", "课堂讲义.pdf");
+  if (fs.existsSync(workPdfPath)) {
+    fs.copyFileSync(workPdfPath, expectedPath);
+    return expected;
+  }
 
   const legacyPath = path.join(course.outputDir, legacyClassroomPdfFileName);
   if (legacyClassroomPdfFileName !== expected && fs.existsSync(legacyPath)) {
@@ -75,12 +100,39 @@ export function ensureCourseClassroomPdfFileName(course: Course, studentName?: s
   }
 
   const rootPdfs = listCourseFiles(course.outputDir).filter(
-    (file) => file.kind === "pdf" && !file.relativePath.includes(path.sep) && !file.relativePath.includes("/")
+    (file) =>
+      file.kind === "pdf" &&
+      !file.name.includes("授课一体版") &&
+      !file.name.includes("课后作业") &&
+      !file.relativePath.includes(path.sep) &&
+      !file.relativePath.includes("/")
   );
   if (rootPdfs.length === 1) {
     fs.renameSync(rootPdfs[0].path, expectedPath);
   }
   return expected;
+}
+
+export function ensureCourseTeachingPdfFileName(course: Course, studentName?: string) {
+  if (course.type !== "formal") return "";
+  const expected = courseTeachingPdfFileName(course, studentName);
+  const expectedPath = path.join(course.outputDir, expected);
+  if (fs.existsSync(expectedPath)) return expected;
+
+  const candidates = [
+    path.join(course.outputDir, "_work", "授课一体版.pdf"),
+    path.join(course.outputDir, "授课一体版.pdf")
+  ];
+  const source = candidates.find((candidate) => fs.existsSync(candidate));
+  if (source) {
+    fs.copyFileSync(source, expectedPath);
+  }
+  return expected;
+}
+
+export function ensureCoursePdfFileNames(course: Course, studentName?: string) {
+  ensureCourseClassroomPdfFileName(course, studentName);
+  ensureCourseTeachingPdfFileName(course, studentName);
 }
 
 function containsCoreOutputs(outputDir: string, course: Course) {

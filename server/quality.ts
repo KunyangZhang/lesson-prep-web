@@ -1,6 +1,12 @@
+import fs from "node:fs";
 import { listCourseFiles } from "./files.js";
 import { nowIso } from "./store.js";
-import { courseClassroomPdfFileName } from "./courseOutput.js";
+import {
+  courseClassroomPdfFileName,
+  courseTeachingPdfFileName,
+  homeworkAnswerPdfFileName,
+  homeworkPdfFileName
+} from "./courseOutput.js";
 import type { Course, CourseFile, GenerationQuality, QualityCheckItem, QualityStatus } from "./types.js";
 
 function item(
@@ -34,8 +40,13 @@ export function assessCourseQuality(course: Course, studentName?: string): Gener
     { name: "老师逐字稿.md", minSize: 100 },
     { name: "知识点详解.md", minSize: 100 },
     { name: courseClassroomPdfFileName(course, studentName), minSize: 200 },
-    { name: "课后反馈.md", minSize: 80 }
   ];
+  if (course.type === "formal") {
+    requiredFiles.push({ name: courseTeachingPdfFileName(course, studentName), minSize: 200 });
+    requiredFiles.push({ name: homeworkPdfFileName, minSize: 200 });
+    requiredFiles.push({ name: homeworkAnswerPdfFileName, minSize: 200 });
+  }
+  requiredFiles.push({ name: "课后反馈.md", minSize: 80 });
   let files: CourseFile[] = [];
   try {
     files = listCourseFiles(course.outputDir);
@@ -73,10 +84,64 @@ export function assessCourseQuality(course: Course, studentName?: string): Gener
     }
   }
 
+  const feedbackFile = byName.get("课后反馈.md");
+  if (feedbackFile && feedbackFile.size >= 80) {
+    const feedback = fs.readFileSync(feedbackFile.path, "utf8");
+    const placeholderPattern = /\[(?:课后填写|待填写|待确认|待补充)\]|(?:课后|课后请|请|待)(?:手动)?(?:填写|补充)/;
+    if (placeholderPattern.test(feedback)) {
+      checks.push(
+        item(
+          "feedback-complete",
+          "课后反馈完整度",
+          "fail",
+          "课后反馈仍包含待手动填写的占位内容，必须改为可直接发给家长的完整成稿。",
+          feedbackFile.path
+        )
+      );
+    } else {
+      checks.push(
+        item(
+          "feedback-complete",
+          "课后反馈完整度",
+          "pass",
+          "未发现需要手动回填的占位内容。",
+          feedbackFile.path
+        )
+      );
+    }
+
+    const feedbackTemplatePattern = /^【学生姓名】：[^\n]+\n【上课日期】：\d{4}-\d{2}-\d{2}\n【授课科目】：[^\n]+\n【本节课核心内容】\n\S[^]*?\n【学生课堂掌握情况】\n1、[^\n]+\n2、[^\n]+\n【课后作业】：\n\S[^]*\n?$/;
+    if (feedbackTemplatePattern.test(feedback)) {
+      checks.push(
+        item(
+          "feedback-template",
+          "课后反馈格式",
+          "pass",
+          "课后反馈符合六栏固定模板。",
+          feedbackFile.path
+        )
+      );
+    } else {
+      checks.push(
+        item(
+          "feedback-template",
+          "课后反馈格式",
+          "fail",
+          "课后反馈必须严格使用姓名、日期、科目、核心内容、两条掌握情况和课后作业六栏模板。",
+          feedbackFile.path
+        )
+      );
+    }
+  }
+
   const workFiles = [
+    { label: "_work/连续学习档案.md", paths: ["_work/连续学习档案.md"] },
     { label: "_work/题目提取.md", paths: ["_work/题目提取.md", "_work/题目索引.md"] },
     { label: "_work/答案核对表.md", paths: ["_work/答案核对表.md"] },
-    { label: "_work/课件生成计划.md", paths: ["_work/课件生成计划.md", "_work/课件页码映射.md"] },
+    {
+      label: "_work/课件生成计划.md",
+      paths: ["_work/课件生成计划.md", "_work/课件页码映射.md", "_work/授课一体版页码映射.md"]
+    },
     { label: "_work/逐字稿丰富清单.md", paths: ["_work/逐字稿丰富清单.md", "_work/内容丰富清单.md"] }
   ];
   for (const workFile of workFiles) {

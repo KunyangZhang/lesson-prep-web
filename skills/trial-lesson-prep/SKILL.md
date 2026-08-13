@@ -26,11 +26,12 @@ The main agent owns task decomposition, integration, conflict resolution, and th
 
 Create intermediate working files in `_work/` for substantial lesson-prep jobs. These files are internal QA artifacts and are not user-facing deliverables:
 
-1. `_work/题目索引.md`: extracted local, library, screenshot, and web questions with internal IDs, topics, teaching roles, and missing information.
-2. `_work/候选题池.md`: shortlisted and rejected candidates, fit rationale, and whether a question is verified authentic exam, official exam, simulation/mock, local, adapted, or self-written.
-3. `_work/答案核对表.md`: independent solutions, final answers, condition checks, diagram checks, and unresolved doubts.
-4. `_work/课件页码映射.md`: classroom PDF page numbers mapped to the visible `第X题` labels and teacher-script sections.
-5. `_work/内容丰富清单.md`: checks for sufficient diagnosis, model, same-type validation, variant/authentic-style, homework, prompts, and common-error coverage.
+1. `_work/连续学习档案.md`: same-student lesson history summary, previous unresolved points, this lesson's bridge, old-knowledge retrieval plan, and next-lesson handoff. For a first trial lesson, use it as the starting diagnostic record for the future formal-course sequence.
+2. `_work/题目索引.md`: extracted local, library, screenshot, and web questions with internal IDs, topics, teaching roles, and missing information.
+3. `_work/候选题池.md`: shortlisted and rejected candidates, fit rationale, and whether a question is verified authentic exam, official exam, simulation/mock, local, adapted, or self-written.
+4. `_work/答案核对表.md`: independent solutions, final answers, condition checks, diagram checks, and unresolved doubts.
+5. `_work/课件页码映射.md`: classroom PDF page numbers mapped to the visible `第X题` labels and teacher-script sections.
+6. `_work/内容丰富清单.md`: checks for sufficient diagnosis, model, same-type validation, variant/authentic-style, homework, prompts, and common-error coverage.
 
 Do not require these working files to be uploaded or emphasized in the final user-facing materials unless the user asks.
 
@@ -38,7 +39,7 @@ Do not require these working files to be uploaded or emphasized in the final use
 
 Run lesson preparation in two internal stages:
 
-1. Stage 1: complete question extraction, `_work/题目索引.md`, `_work/候选题池.md`, `_work/答案核对表.md`, and the visible-gain course skeleton before drafting final materials.
+1. Stage 1: complete the continuity file, question extraction, `_work/题目索引.md`, `_work/候选题池.md`, `_work/答案核对表.md`, and the visible-gain course skeleton before drafting final materials.
 2. Stage 2: generate the A4 portrait classroom handout PDF, write the teacher script, enrich the content and conversion/follow-up wording, complete the final four deliverables, and run the quality gate.
 
 Do not enter Stage 2 until the selected question sequence has been checked for answer correctness, topic fit, visible-gain design, and enough question volume for the requested class length.
@@ -75,6 +76,7 @@ If a local PDF/question document is provided, use it as the primary lesson spine
 Identify:
 
 - Student name, junior-high or high-school stage, grade, province or paper region, school topic, exact knowledge point, and class length.
+- Same-student previous lessons when available: last lesson topic, visible gain, unresolved mistakes, homework status, and the next-step suggestion left by the previous lesson.
 - Recent score, ranking, school level, exam difficulty, recent paper, answer sheet, wrong questions, or screenshots.
 - Student goal, confidence, likely bottleneck, and the observable result to demonstrate.
 - Parent or advisor notes, schedule, and conversion concerns when available.
@@ -85,7 +87,9 @@ If only a topic is provided, assume a 40-minute one-on-one trial lesson and mark
 
 ### 1. Diagnose The Student
 
-Build a student-specific diagnosis. Do not classify solely by score or force a fixed taxonomy. Use score, paper difficulty, wrong-answer patterns, confidence, current progress, and lesson duration to define a custom lesson ladder.
+Build a student-specific diagnosis. Do not classify solely by score or force a fixed taxonomy. Use score, paper difficulty, wrong-answer patterns, confidence, current progress, lesson duration, and same-student history when available to define a custom lesson ladder.
+
+If same-student history exists, begin from the previous lesson's unresolved point or next-step suggestion. If this is the student's first trial lesson, write what this lesson must record so that the next formal lesson is not prepared from zero.
 
 Name each layer for this student, explain its purpose, connect it to selected questions, and state the condition for moving forward.
 
@@ -114,6 +118,7 @@ Build a before-and-after contrast:
 - Give a same-type variant so the student proves the gain.
 - Leave a next-lesson hook that points toward systematic learning.
 - Explicitly write the `大招名称`, `适用条件`, `爽感设计`, and `学生证明自己会了的动作` in `老师逐字稿.md`.
+- If there is prior same-student history, make the visible gain build on the previous lesson rather than replacing it with an unrelated new trick.
 
 ### 4. Verify Every Question
 
@@ -155,11 +160,13 @@ Use image generation only when a problem genuinely requires a complex situationa
 - Micro-step explanations for every derivation, calculation, diagram observation, theorem use, and transition. Do not rely on "显然", "直接可得", "套公式", or unstated mental steps.
 - Only in-scope knowledge from the student's current grade, textbook progress, and lesson topic. If a prerequisite is missing, teach it briefly before using it; do not introduce later-grade or unlearned shortcuts unless explicitly approved and marked.
 - Class metadata, assumptions, student diagnosis, objective, and the custom lesson ladder.
+- `上节课承接与本节落点` when history exists, or `首课诊断起点` when no usable history exists. This section must state what to retrieve from the previous lesson, what today's visible gain extends, and what the next formal lesson should inherit.
 - A minute-by-minute timeline.
 - Natural spoken Chinese under labels such as `老师说`, `学生可能回答`, `追问`, and `板书或批注`.
 - For every question: visible `第X题` label when it appears in the classroom PDF, detailed thinking path, full answer, common wrong paths, correction wording, hints from light to explicit, checks for understanding, and where the question appears in the PDF.
 - A before-and-after recap.
 - Pre-class messages, a group introduction, parent-facing post-class feedback, homework, and follow-up wording.
+- A handoff note for the next preparation: what this trial lesson should update in the student's long-term weak-point list, common-mistake list, and next lesson suggestion. Use `[课后填写]` for real performance that has not happened yet.
 
 ## Mandatory Conversation Modules
 
@@ -173,6 +180,7 @@ Every `老师逐字稿.md` must include these two spoken modules unless the user
 `知识点详解.md` must include:
 
 - A complete no-jump knowledge explanation that is detailed enough for a teacher who has not learned the topic before to understand and teach it.
+- A `前后课程衔接` section: previous prerequisites to retrieve when available, this lesson's diagnostic value, next lesson directions, and which old or newly exposed mistakes should be watched.
 - Clear scope boundaries: what this lesson may use, what is not allowed because it is beyond the student's current learning progress, and any `[超纲风险-需确认]` item.
 - Topic overview and prerequisite map.
 - Complete definitions, notation, formulas, properties, theorem conditions, derivations, and proof ideas.
@@ -185,20 +193,16 @@ Every `老师逐字稿.md` must include these two spoken modules unless the user
 
 `课后反馈.md` must be a separate user-facing deliverable for trial lessons. Follow any provided feedback template first. If no template is provided, use this structure:
 
-- 学生姓名
-- 授课时间
-- 授课科目
-- 本节课主要学习内容
-- 学生课堂表现
-- 知识掌握情况
-- 课堂问题与改进方向
-- 课后作业
-- 学习建议
-- 家长配合
+- `【学生姓名】：` followed by the student's actual name.
+- `【上课日期】：` followed by the actual date in `YYYY-MM-DD` format.
+- `【授课科目】：` followed by the actual subject.
+- `【本节课核心内容】` followed by a concise summary of the actual topics, methods, and classroom requirements.
+- `【学生课堂掌握情况】` followed by two numbered, concrete points: topic-specific mastery and overall classroom state.
+- `【课后作业】：` followed by the actual assignment. When no more specific assignment is supplied, write `根据课堂内容上传题目图片。`
 
-Write in parent-facing Chinese. For trial lessons, connect the feedback to the visible learning gain, the student's bottleneck, the method learned, homework, and the recommended next-step course direction. Do not fabricate actual classroom performance or parent reactions; if the lesson has not happened yet, mark uncertain behavior as `[课后填写]` or write it as a post-class feedback draft.
+Write in parent-facing Chinese. For trial lessons, connect the feedback to the visible learning gain, the student's bottleneck, the method learned, homework, and the recommended next-step course direction. Always produce a complete, ready-to-send feedback document: do not leave blank sections or use placeholders such as `[课后填写]`, `[待确认]`, `待补充`, or `请填写`. Unless the user provides contrary evidence, assume the student participated actively and cooperated well in class. Describe mastery conservatively and concretely: state that the foundational content was followed while the lesson's key and difficult points still need targeted post-class practice and consolidation. Adapt those statements to the actual topic instead of repeating generic boilerplate. Do not invent an exact accuracy rate, exact wrong-question count, score change, parent reaction, or other precise observation that was not provided.
 
-Mirror the `课程总结（结束前2分钟）` structure in `课后反馈.md` when no stronger user template is provided: `学习内容`, `学生表现`, `待提升点`, and `后续建议`.
+Keep the feedback in exactly these six labeled blocks. Do not add a title, examples, instructions to the teacher, extra sections, or continuity headings. Incorporate the diagnostic finding and next-step direction briefly inside the core-content or mastery text when needed.
 
 ## Tone And Safety
 
@@ -212,8 +216,10 @@ Mirror the `课程总结（结束前2分钟）` structure in `课后反馈.md` w
 Before finishing:
 
 - Confirm all four required deliverables exist, including `课后反馈.md`.
-- Confirm the `_work/` internal files exist for substantial jobs: `题目索引.md`, `候选题池.md`, `答案核对表.md`, `课件页码映射.md`, and `内容丰富清单.md`.
-- Confirm the two-stage workflow was followed: extraction, candidate pool, answer verification, and visible-gain course skeleton before final PDF/script generation.
+- Confirm `课后反馈.md` is fully written and ready to send: every section has substantive content, classroom participation is phrased positively by default, key and difficult points are paired with specific consolidation practice, and no fill-in placeholder remains.
+- Confirm the `_work/` internal files exist for substantial jobs: `连续学习档案.md`, `题目索引.md`, `候选题池.md`, `答案核对表.md`, `课件页码映射.md`, and `内容丰富清单.md`.
+- Confirm the two-stage workflow was followed: continuity review, extraction, candidate pool, answer verification, and visible-gain course skeleton before final PDF/script generation.
+- Confirm same-student history was used when available, and that `老师逐字稿.md`, `知识点详解.md`, and `课后反馈.md` include concrete previous-current-next continuity rather than generic statements.
 - Confirm `老师逐字稿.md` includes `知识点对话（专业度+真题关联）` and `课程总结（结束前2分钟）`.
 - Confirm the knowledge-point dialogue uses verified exam citations or explicitly marks unverifiable frequency as `[待检索确认]`.
 - Confirm any question called `真题`, `官方考试题`, or `模拟题` has a reliable source; confirm local, adapted, or self-written questions are not mislabeled as authentic exam questions.
@@ -223,7 +229,7 @@ Before finishing:
 - Confirm `老师逐字稿.md` and `知识点详解.md` contain no skipped reasoning steps, no unexplained formulas or theorem jumps, and no unapproved out-of-scope knowledge.
 - Confirm every selected question's final answer and key reasoning have been independently checked; flag unresolved or possibly wrong answers before finalization.
 - Compile the classroom PDF with XeLaTeX and confirm it opens.
-- Render representative PDF pages and inspect readability, absence of answer/method leakage, diagram accuracy, and writable space.
+- If rendering is needed, inspect only contact sheets or thumbnails for coarse readability, absence of obvious answer/method leakage, diagram crowding, and writable space. Do not zoom into single pages.
 - Confirm every displayed diagram is mathematically accurate.
 
 ## Feishu Finalization

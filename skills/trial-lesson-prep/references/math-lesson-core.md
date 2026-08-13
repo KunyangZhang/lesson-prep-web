@@ -31,13 +31,34 @@ Create these intermediate files under `_work/` for substantial lesson-prep jobs.
 1. `_work/题目索引.md`: extracted local, library, screenshot, and web questions with internal IDs, topics, teaching roles, and missing information.
 2. `_work/候选题池.md`: shortlisted and rejected candidates, fit rationale, and whether a question is verified authentic exam, official exam, simulation/mock, local, adapted, or self-written.
 3. `_work/答案核对表.md`: independent solutions, final answers, condition checks, diagram checks, and unresolved doubts.
+4. `_work/连续学习档案.md`: same-student history summary, previous unresolved points, current lesson bridge, old-knowledge retrieval plan, and next-lesson handoff.
 
 Run preparation in two internal stages:
 
-1. Stage 1: finish question extraction, candidate pool, answer verification, and visible-gain course skeleton.
+1. Stage 1: finish continuity review, question extraction, candidate pool, answer verification, and visible-gain course skeleton.
 2. Stage 2: generate the classroom PDF, write and enrich the teacher script, complete the final four deliverables, and run QA.
 
 Do not start Stage 2 until the selected question sequence has passed answer verification, topic-fit review, visible-gain review, and question-volume review for the class length.
+
+## 1A. Continuous Lesson Standard
+
+Same-student lessons must form a learning chain. If previous lessons or previous output directories are available, read the latest relevant `课后反馈.md`, `老师逐字稿.md`, and internal notes before selecting the new sequence.
+
+Every substantial lesson should create `_work/连续学习档案.md` with:
+
+- Last lesson topic and visible gain.
+- What the student appeared to have mastered, using `[课后填写]` if real performance is unknown.
+- Unresolved mistakes or habits to retrieve at the start of this lesson.
+- A short old-knowledge retrieval item or oral check for this lesson.
+- The bridge from previous knowledge to today's target.
+- The handoff that the next preparation should inherit.
+
+Final deliverables must show continuity:
+
+- `老师逐字稿.md`: include `上节课承接与本节落点` when history exists, or `首课诊断起点` when no usable history exists.
+- `知识点详解.md`: include `前后课程衔接`, explaining prerequisites from previous lessons and next-topic directions.
+- `课堂课件.pdf`: when history exists, include a short student-facing retrieval question before the new core; do not include teacher-only historical notes.
+- `课后反馈.md`: include `与上节课的衔接`, `本节课新增进展`, and `下节课建议` when relevant.
 
 ## 2. Local Library And Web Research
 
@@ -244,9 +265,9 @@ Size and composition rules:
 
 QA for solid-geometry figures:
 
-- Render every PDF page that contains a geometry figure.
-- Inspect whether parallel edges look parallel, hidden edges are plausible, labels are legible, the intended plane/line/point is immediately identifiable, and the drawing matches the problem statement.
-- If the figure fails any of these checks, revise the TikZ coordinates or split the figure and recompile. Do not accept a figure merely because it compiled.
+- Prefer TeX-side correctness: define coordinates deliberately, keep labels offset from lines, and split crowded diagrams before compiling.
+- For visual QA, generate only low-resolution contact sheets or thumbnails. Do not inspect full-size single-page renders with image tools, and do not zoom into individual pages.
+- If the thumbnail suggests obvious crowding, revise the TikZ coordinates or split the figure based on the TeX source and problem statement, then recompile. Do not spend time on repeated high-resolution visual inspection.
 
 Use image generation only for a genuinely necessary complex situational image, spatial illustration, or hard-to-redraw problem visual. When it is needed, follow the installed `imagegen` skill and use the built-in image generation tool by default. Do not generate decorative images. Do not ask an image model to draw exact geometry, axes, measurements, formulas, or answer text. Validate every generated image before embedding it and mark it as a generated illustration in the teacher script.
 
@@ -255,6 +276,7 @@ Use image generation only for a genuinely necessary complex situational image, s
 - Compile with XeLaTeX, usually twice.
 - Confirm the PDF exists, is non-empty, and opens.
 - Check page count with PDF tooling.
+- If visual checking is useful, use only contact sheets or thumbnails; do not zoom into single pages.
 
 ## 6A. Final QA Priorities
 
@@ -270,18 +292,14 @@ Before finalization, prioritize these checks:
 
 Generate `课后反馈.md` as a separate deliverable for every trial lesson. If the user provides a Word/PDF/template file, extract its sections and follow that template. Default sections are:
 
-- 学生姓名
-- 授课时间
-- 授课科目
-- 本节课主要学习内容
-- 学生课堂表现
-- 知识掌握情况
-- 课堂问题与改进方向
-- 课后作业
-- 学习建议
-- 家长配合
+- `【学生姓名】：` with the actual name
+- `【上课日期】：` with the actual date in `YYYY-MM-DD`
+- `【授课科目】：` with the actual subject
+- `【本节课核心内容】` with a concise topic-specific summary
+- `【学生课堂掌握情况】` with two numbered points covering mastery and classroom state
+- `【课后作业】：` with the actual assignment, or `根据课堂内容上传题目图片。` when no more specific assignment is supplied
 
-Use concise parent-facing Chinese. For trial lessons, emphasize the diagnostic finding, visible before-and-after learning gain, student strengths, remaining bottleneck, homework, and recommended next-step learning plan. Do not invent actual classroom performance before class; use `[课后填写]` or draft wording when behavior is unknown.
+Use concise parent-facing Chinese and write a complete, ready-to-send document with substantive content in every block. Do not add a title, examples, extra sections, teacher instructions, `[课后填写]`, `[待确认]`, `待补充`, `请填写`, or another fill-in placeholder. For trial lessons, incorporate the diagnostic finding, visible learning gain, and remaining bottleneck inside the two content blocks. Unless contrary evidence is supplied, describe the student as participating actively and cooperating well. State conservatively that foundational content was followed while the actual lesson's key and difficult points still require targeted practice and consolidation. Do not invent exact accuracy, error counts, score changes, parent reactions, or other unsupported precise observations.
 
 ## 8. Markdown Standard
 

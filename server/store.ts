@@ -4,6 +4,10 @@ import path from "node:path";
 import { config } from "./config.js";
 import type { Course, Db, Job, Material, Student, User } from "./types.js";
 
+interface StoreOptions {
+  persist?: boolean;
+}
+
 const emptyDb = (): Db => ({
   users: [],
   students: [],
@@ -15,18 +19,27 @@ const emptyDb = (): Db => ({
 
 export class Store {
   private dbPath: string;
+  private persist: boolean;
   data: Db;
 
-  constructor(dbPath = path.join(config.dataDir, "app-db.json")) {
+  constructor(dbPath = path.join(config.dataDir, "app-db.json"), options: StoreOptions = {}) {
     this.dbPath = dbPath;
+    this.persist = options.persist !== false;
     this.data = this.load();
   }
 
   reload() {
-    this.data = this.load();
+    const loaded = this.load();
+    this.data.users = mergeEntities(this.data.users, loaded.users);
+    this.data.students = mergeEntities(this.data.students, loaded.students);
+    this.data.courses = mergeEntities(this.data.courses, loaded.courses);
+    this.data.jobs = mergeEntities(this.data.jobs, loaded.jobs);
+    this.data.materials = mergeEntities(this.data.materials, loaded.materials);
+    this.data.ragChunks = mergeEntities(this.data.ragChunks, loaded.ragChunks);
   }
 
   save() {
+    if (!this.persist) return;
     fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
     const tmpPath = `${this.dbPath}.${process.pid}.tmp`;
     fs.writeFileSync(tmpPath, JSON.stringify(this.data, null, 2), "utf8");
@@ -107,6 +120,19 @@ export class Store {
   }
 }
 
+function mergeEntities<T extends { id: string }>(current: T[], loaded: T[]) {
+  const currentById = new Map(current.map((item) => [item.id, item]));
+  return loaded.map((next) => {
+    const existing = currentById.get(next.id);
+    if (!existing) return next;
+    for (const key of Object.keys(existing) as Array<keyof T>) {
+      if (!(key in next)) delete existing[key];
+    }
+    Object.assign(existing, next);
+    return existing;
+  });
+}
+
 export function nowIso() {
   return new Date().toISOString();
 }
@@ -119,13 +145,38 @@ export function hashId(input: string) {
   return crypto.createHash("sha1").update(input).digest("hex");
 }
 
-export function sanitizeFilename(input: string, fallback = "untitled") {
+export const maxSafeFilenameBytes = 240;
+
+export function truncateUtf8Bytes(input: string, maxBytes: number) {
+  if (maxBytes <= 0) return "";
+  if (Buffer.byteLength(input, "utf8") <= maxBytes) return input;
+
+  let result = "";
+  let bytes = 0;
+  for (const character of input) {
+    const characterBytes = Buffer.byteLength(character, "utf8");
+    if (bytes + characterBytes > maxBytes) break;
+    result += character;
+    bytes += characterBytes;
+  }
+  return result;
+}
+
+export function fitFilenameComponent(stem: string, suffix = "", maxBytes = maxSafeFilenameBytes) {
+  const limit = Math.max(1, Math.min(255, Math.floor(maxBytes)));
+  const safeSuffix = truncateUtf8Bytes(suffix, limit);
+  const stemBudget = Math.max(0, limit - Buffer.byteLength(safeSuffix, "utf8"));
+  return `${truncateUtf8Bytes(stem, stemBudget).trimEnd()}${safeSuffix}`;
+}
+
+export function sanitizeFilename(input: string, fallback = "untitled", maxBytes = maxSafeFilenameBytes) {
   const cleaned = input
     .replace(/[<>:"/\\|?*\u0000-\u001F\u007F-\u009F]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 80);
-  return cleaned || fallback;
+  const fitted = truncateUtf8Bytes(cleaned, maxBytes).trim();
+  return fitted || truncateUtf8Bytes(fallback, maxBytes) || "untitled";
 }
 
 export function decodeUploadName(input: string) {

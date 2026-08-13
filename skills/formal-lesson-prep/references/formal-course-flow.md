@@ -2,7 +2,7 @@
 
 This reference adapts the user's trial-lesson process into a formal-course preparation workflow.
 
-Use `math-lesson-core.md` as the controlling specification. In particular, create a student-specific difficulty ladder and generate `知识点详解.md` rather than a student handout.
+Use `math-lesson-core.md` as the controlling specification. In particular, create a student-specific difficulty ladder and generate both the original student classroom PDF and the teacher all-in-one PDF.
 
 ## Trial Lesson Vs Formal Lesson
 
@@ -12,7 +12,7 @@ Use `math-lesson-core.md` as the controlling specification. In particular, creat
 | Content design | 刻意设计一个有记忆点的环节 | 按知识体系循序渐进 |
 | Question choice | 1-2 道能产生反差的题 | 诊断题、例题、真题、变式、作业形成梯度 |
 | Method use | 强调 "大招" 和获得感 | 方法必须回到完整知识体系和长期复习 |
-| Output | 逐字稿、知识点详解、课堂课件 PDF、沟通话术、课后反馈 | 逐字稿、知识点详解、课堂课件 PDF、真题练习、作业闭环 |
+| Output | 逐字稿、知识点详解、课堂课件 PDF、沟通话术、课后反馈 | 逐字稿、知识点详解、原版学生课堂 PDF、教师授课一体版 PDF、课后反馈 |
 
 Formal lessons can still borrow the trial-lesson strengths: diagnostic opener, visible progress, board recap, and encouraging language. The difference is that every technique must serve a complete learning path.
 
@@ -24,9 +24,11 @@ Formal lessons can still borrow the trial-lesson strengths: diagnostic opener, v
 4. Search localized or high-quality exam questions and verify the solutions.
 5. Arrange the questions into a student-specific learning ladder: diagnostic -> model example -> guided practice -> independent variant -> homework.
 6. Write the teacher script and detailed teacher-facing knowledge file as Markdown files.
-7. Build a clean A4 portrait LaTeX classroom handout PDF with writable tablet space.
-8. Check the files for no fenced code blocks and correct math delimiters.
-9. Fixed final step: stop after the four local deliverables pass quality checks. The host service will sync them to Feishu with the current logged-in `lark-cli --as user` identity, create the calendar event when possible, and send the sync result message.
+7. From the same verified sequence, build the original A4 portrait student classroom handout with writable tablet space and no answers.
+8. Build a second A4 portrait teacher all-in-one PDF. For every question, use exactly `知识点具体内容与完整推导 -> 题目与必要图形 -> 详细不跳步解答`. Keep teacher wording, student-thinking prompts, expected responses, hints, board notes, correction scripts, and transfer prompts in `老师逐字稿.md`, not in the PDF.
+9. Check both PDFs for matching question order and figures; confirm the student version hides answers and the teacher version preserves the full mathematical detail of `知识点详解.md` without answer-key compression.
+10. Check the Markdown files for no fenced code blocks and correct math delimiters.
+11. Fixed final step: stop after the five local deliverables pass quality checks. The host service will sync them to Feishu with the current logged-in `lark-cli --as user` identity, create the calendar event when possible, and send the sync result message.
 
 ## Mandatory Spoken Modules
 

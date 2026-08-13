@@ -1,12 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
-import { listCourseFiles } from "./files.js";
-import { coreOutputFileNames, ensureCourseClassroomPdfFileName, recoverCourseOutputDir } from "./courseOutput.js";
+import { coreOutputFileNames, courseClassroomPdfFileName, ensureCoursePdfFileNames, recoverCourseOutputDir } from "./courseOutput.js";
 import {
   createCalendarEventWithLarkCli,
   createDriveFolderWithLarkCli,
   deleteDriveFolderWithLarkCli,
   formatLarkPermissionError,
+  getCurrentUserOpenIdWithLarkCli,
   importMarkdownWithLarkCli,
   searchDriveWithLarkCli,
   sendTextWithCurrentUserLarkCli,
@@ -15,6 +15,7 @@ import {
 } from "./larkCli.js";
 import type { Course, Job } from "./types.js";
 import type { Store } from "./store.js";
+import { sanitizeFilename } from "./store.js";
 
 interface SyncResult {
   name: string;
@@ -36,12 +37,19 @@ interface DeleteResult {
   detail: string;
 }
 
-function notifyTargetFromEnv() {
+interface NotificationResult {
+  action: "sent" | "skipped" | "failed";
+  detail: string;
+  attemptedAt: string;
+  sentAt?: string;
+}
+
+async function notificationTarget() {
   const receiveId =
     process.env.FEISHU_NOTIFY_OPEN_ID ||
     process.env.FEISHU_CLI_NOTIFY_OPEN_ID ||
     process.env.FEISHU_LESSON_NOTIFY_OPEN_ID ||
-    "ou_034209f962a2451251af0282fe555c20";
+    (await getCurrentUserOpenIdWithLarkCli());
   if (!receiveId) return null;
   return {
     receiveIdType: "open_id" as const,
@@ -63,11 +71,7 @@ function lessonParentFolderToken() {
 }
 
 function sanitizeFolderName(value: string) {
-  return value
-    .replace(/[\\/:*?"<>|]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 120);
+  return sanitizeFilename(value, "备课", 240);
 }
 
 function courseFolderName(store: Store, course: Course) {
@@ -75,6 +79,10 @@ function courseFolderName(store: Store, course: Course) {
   const time = course.lessonTime ? course.lessonTime.replace("T", " ").replace(/:/g, "-") : course.createdAt.slice(0, 16).replace("T", " ");
   const type = course.type === "trial" ? "试听课" : "正式课";
   return sanitizeFolderName(`${student?.name || "未知学生"} - ${time} - ${type} - ${course.desiredContent || "备课"}`);
+}
+
+function isPdfImageRefineJob(job: Job) {
+  return job.kind === "pdf-image-refine";
 }
 
 async function createCourseFolder(store: Store, course: Course) {
@@ -90,6 +98,7 @@ async function createCourseFolder(store: Store, course: Course) {
 }
 
 async function deletePreviousCourseFolder(store: Store, course: Course, job: Job): Promise<DeleteResult> {
+  if (isPdfImageRefineJob(job)) return { action: "skipped", detail: "pdf image refine keeps existing course folder" };
   if (!job.refineInstruction) return { action: "skipped", detail: "not a refine job" };
   const folderToken = course.feishuSync?.folderToken || (await findPreviousCourseFolderToken(store, course, job));
   if (!folderToken) return { action: "skipped", detail: "no previous folder token found" };
@@ -139,11 +148,12 @@ async function findPreviousCourseFolderToken(store: Store, course: Course, job: 
 }
 
 function shouldCreateCourseFolder(job: Job, deleteResult: DeleteResult) {
+  if (isPdfImageRefineJob(job)) return false;
   if (!job.refineInstruction) return true;
   return deleteResult.action === "deleted" || deleteResult.action === "skipped" || deleteResult.action === "failed";
 }
 
-async function syncOneFile(filePath: string, folderToken: string): Promise<SyncResult> {
+async function syncOneFile(filePath: string, folderToken: string, fileToken = ""): Promise<SyncResult> {
   const name = path.basename(filePath);
   try {
     if ([".md", ".markdown"].includes(path.extname(name).toLowerCase())) {
@@ -162,14 +172,14 @@ async function syncOneFile(filePath: string, folderToken: string): Promise<SyncR
       };
     }
     if (path.extname(name).toLowerCase() === ".pdf") {
-      const result = (await uploadFileWithLarkCli(filePath, folderToken)).data as {
+      const result = (await uploadFileWithLarkCli(filePath, folderToken, fileToken)).data as {
         file_token?: string;
         url?: string;
       };
       return {
         name,
         action: "uploaded",
-        detail: result.url || result.file_token || "uploaded",
+        detail: result.url || result.file_token || (fileToken ? "overwritten" : "uploaded"),
         token: result.file_token,
         url: result.url
       };
@@ -220,6 +230,57 @@ function syncResultLine(result: SyncResult) {
   return `${result.name}: ${result.action} (${result.url || result.detail})`;
 }
 
+function formatNotificationError(error: unknown) {
+  return formatLarkPermissionError(error) || (error instanceof Error ? error.message : String(error));
+}
+
+async function sendFeishuNotification(text: string): Promise<NotificationResult> {
+  const attemptedAt = new Date().toISOString();
+  const target = await notificationTarget();
+  if (!target) return { action: "skipped", detail: "notification target is empty", attemptedAt };
+
+  try {
+    await sendTextWithCurrentUserLarkCli(target, text);
+    return {
+      action: "sent",
+      detail: target.receiveId,
+      attemptedAt,
+      sentAt: new Date().toISOString()
+    };
+  } catch (error) {
+    return {
+      action: "failed",
+      detail: formatNotificationError(error),
+      attemptedAt
+    };
+  }
+}
+
+function saveNotificationResult(store: Store, course: Course, result: NotificationResult, text: string) {
+  course.feishuSync = {
+    ...course.feishuSync,
+    notificationStatus: result.action,
+    notificationDetail: result.detail,
+    notificationAttemptedAt: result.attemptedAt,
+    notificationSentAt: result.sentAt || course.feishuSync?.notificationSentAt,
+    lastNotificationText: text
+  };
+  store.save();
+}
+
+function buildFallbackNotificationText(store: Store, course: Course) {
+  const title = formatCourseTitle(store, course);
+  return [
+    `备课任务已完成：${title}`,
+    `本地目录：${course.outputDir}`,
+    course.feishuSync?.folderUrl ? `飞书目录：${course.feishuSync.folderUrl}` : "",
+    "",
+    "飞书同步结果：",
+    course.feishuSync?.lastSyncedAt ? `- 最近同步时间: ${course.feishuSync.lastSyncedAt}` : "- 未找到最近同步时间",
+    course.feishuSync?.folderUrl ? "- 历史飞书目录已创建，详细文件链接请打开飞书目录查看。" : "- 未找到历史飞书目录记录。"
+  ].filter((line) => line !== "").join("\n");
+}
+
 function calendarSummary(store: Store, course: Course) {
   const student = store.findStudent(course.studentId);
   return `${student?.name || "未知学生"}${course.type === "trial" ? "试听课" : "正式课"}`;
@@ -244,6 +305,7 @@ function calendarConfigured() {
 
 async function createLessonCalendarEvent(store: Store, course: Course, job: Job, results: SyncResult[], folderUrl?: string): Promise<CalendarResult> {
   if (!calendarConfigured()) return { action: "skipped", detail: "FEISHU_LESSON_CALENDAR_ENABLED=false" };
+  if (isPdfImageRefineJob(job)) return { action: "skipped", detail: "pdf image refine does not update calendar" };
   const start = parseLessonDate(course.lessonTime);
   if (!start) return { action: "skipped", detail: "course lessonTime is empty or invalid" };
 
@@ -295,16 +357,36 @@ export async function syncCourseToFeishu(store: Store, course: Course, job: Job)
   if (recovery.changed) store.save();
   if (!fs.existsSync(course.outputDir)) return;
   const student = store.findStudent(course.studentId);
-  ensureCourseClassroomPdfFileName(course, student?.name);
-  const target = notifyTargetFromEnv();
+  ensureCoursePdfFileNames(course, student?.name);
 
-  const wanted = new Set(coreOutputFileNames(course, student?.name));
-  const files = listCourseFiles(course.outputDir).filter((file) => wanted.has(file.name));
+  const expectedNames = isPdfImageRefineJob(job)
+    ? [courseClassroomPdfFileName(course, student?.name)]
+    : coreOutputFileNames(course, student?.name);
+  const files = expectedNames
+    .map((name) => ({ name, path: path.join(course.outputDir, name) }))
+    .filter((file) => fs.existsSync(file.path));
+  const missingFiles = expectedNames.filter((name) => !fs.existsSync(path.join(course.outputDir, name)));
   const results: SyncResult[] = [];
   const deleteResult = await deletePreviousCourseFolder(store, course, job);
   let folderUrl = "";
   let folderToken = "";
-  if (shouldCreateCourseFolder(job, deleteResult)) {
+  if (isPdfImageRefineJob(job)) {
+    folderToken = course.feishuSync?.folderToken || (await findPreviousCourseFolderToken(store, course, job));
+    folderUrl = course.feishuSync?.folderUrl || (folderToken ? `https://my.feishu.cn/drive/folder/${folderToken}` : "");
+    if (!folderToken) {
+      try {
+        const folder = await createCourseFolder(store, course);
+        folderToken = folder.token;
+        folderUrl = folder.url;
+      } catch (error) {
+        results.push({
+          name: "飞书课程文件夹",
+          action: "failed",
+          detail: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+  } else if (shouldCreateCourseFolder(job, deleteResult)) {
     try {
       const folder = await createCourseFolder(store, course);
       folderToken = folder.token;
@@ -323,13 +405,18 @@ export async function syncCourseToFeishu(store: Store, course: Course, job: Job)
       detail: "refine job could not delete previous folder"
     });
   }
+  for (const name of missingFiles) {
+    results.push({ name, action: "failed", detail: "local core output file is missing" });
+  }
   for (const file of files) {
     if (!folderToken) {
       results.push({ name: file.name, action: "skipped", detail: "course folder creation failed" });
     } else {
-      results.push(await syncOneFile(file.path, folderToken));
+      const overwriteToken = isPdfImageRefineJob(job) && path.extname(file.name).toLowerCase() === ".pdf" ? course.feishuSync?.pdfFileToken || "" : "";
+      results.push(await syncOneFile(file.path, folderToken, overwriteToken));
     }
   }
+  const uploadedPdf = results.find((result) => result.action === "uploaded" && path.extname(result.name).toLowerCase() === ".pdf");
   const calendarResult = await createLessonCalendarEvent(store, course, job, results, folderUrl);
   if (folderToken || folderUrl || calendarResult.eventId || deleteResult.action === "deleted") {
     course.feishuSync = {
@@ -338,6 +425,8 @@ export async function syncCourseToFeishu(store: Store, course: Course, job: Job)
       folderUrl: folderUrl || (deleteResult.action === "deleted" ? undefined : course.feishuSync?.folderUrl),
       calendarEventId: calendarResult.eventId || course.feishuSync?.calendarEventId,
       calendarId: calendarResult.calendarId || course.feishuSync?.calendarId || process.env.FEISHU_LESSON_CALENDAR_ID || "",
+      pdfFileToken: uploadedPdf?.token || course.feishuSync?.pdfFileToken,
+      pdfFileUrl: uploadedPdf?.url || course.feishuSync?.pdfFileUrl,
       lastJobId: job.id,
       lastSyncedAt: new Date().toISOString()
     };
@@ -345,8 +434,9 @@ export async function syncCourseToFeishu(store: Store, course: Course, job: Job)
   }
 
   const title = formatCourseTitle(store, course);
+  const eventTitle = isPdfImageRefineJob(job) ? `PDF 图形修订已完成：${title}` : `备课任务已完成：${title}`;
   const lines = [
-    `备课任务已完成：${title}`,
+    eventTitle,
     `本地目录：${course.outputDir}`,
     folderUrl ? `飞书目录：${folderUrl}` : "",
     "",
@@ -357,11 +447,17 @@ export async function syncCourseToFeishu(store: Store, course: Course, job: Job)
   ];
   console.log(`[feishu-sync] ${title}\n${lines.join("\n")}`);
 
-  if (target) {
-    try {
-      await sendTextWithCurrentUserLarkCli(target, lines.join("\n"));
-    } catch (error) {
-      console.warn("[feishu-sync] lark-cli user message send failed", error instanceof Error ? error.message : error);
-    }
+  const notificationText = lines.join("\n");
+  const notificationResult = await sendFeishuNotification(notificationText);
+  saveNotificationResult(store, course, notificationResult, notificationText);
+  if (notificationResult.action === "failed") {
+    console.warn("[feishu-sync] lark-cli user message send failed", notificationResult.detail);
   }
+}
+
+export async function resendCourseFeishuNotification(store: Store, course: Course) {
+  const text = course.feishuSync?.lastNotificationText || buildFallbackNotificationText(store, course);
+  const result = await sendFeishuNotification(text);
+  saveNotificationResult(store, course, result, text);
+  return result;
 }
