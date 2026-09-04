@@ -40,13 +40,25 @@ import {
   UserRound
 } from "lucide-react";
 import { api } from "./api";
+import { AppShell, type AppView } from "./components/AppShell";
+import { DashboardView } from "./features/dashboard/DashboardView";
+import { StudentList } from "./features/students/StudentList";
+import { CourseQueue } from "./features/courses/CourseQueue";
+import { PreparationTimeline } from "./features/courses/PreparationTimeline";
+import { OutputReview } from "./features/courses/OutputReview";
+import { MaterialsLibraryHeader } from "./features/materials/MaterialsLibrary";
+import { SearchResults } from "./features/materials/SearchResults";
+import { TemplateManager } from "./features/templates/TemplateManager";
 import type {
   Course,
   CourseFile,
   CoursePostClassSummary,
+  DashboardCourseSummary,
+  DashboardSnapshot,
   Diagnostics,
   DiagnosticStatus,
   Job,
+  LearningInsights,
   Material,
   RagQuestionRecord,
   RagReindexJob,
@@ -57,7 +69,6 @@ import type {
   User
 } from "./types";
 
-type View = "students" | "materials";
 type CourseDetailTab = "preview" | "workflow" | "postClass" | "activity";
 
 interface AiLessonDraft {
@@ -116,6 +127,7 @@ const emptyCourseForm = {
   durationMinutes: 90,
   localFiles: "",
   notes: "",
+  codexPromptOverride: "",
   autoRun: true
 };
 
@@ -567,7 +579,10 @@ export default function App() {
   const [selectedStudentId, setSelectedStudentId] = useState("");
   const [selectedCourseId, setSelectedCourseId] = useState("");
   const [courses, setCourses] = useState<Course[]>([]);
-  const [view, setView] = useState<View>("students");
+  const [view, setView] = useState<AppView>("dashboard");
+  const [dashboard, setDashboard] = useState<DashboardSnapshot | null>(null);
+  const [dashboardLoading, setDashboardLoading] = useState(true);
+  const [insights, setInsights] = useState<LearningInsights | null>(null);
   const [error, setError] = useState("");
   const [accountOpen, setAccountOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -592,6 +607,21 @@ export default function App() {
     });
   }, []);
 
+  const loadDashboard = useCallback(async () => {
+    setDashboardLoading(true);
+    try {
+      const data = await api.get<{ dashboard: DashboardSnapshot }>("/api/dashboard");
+      setDashboard(data.dashboard);
+    } finally {
+      setDashboardLoading(false);
+    }
+  }, []);
+
+  const loadInsights = useCallback(async () => {
+    const data = await api.get<{ insights: LearningInsights }>("/api/insights");
+    setInsights(data.insights);
+  }, []);
+
   const loadSession = useCallback(async () => {
     const systemPromise = api.get<SystemInfo>("/api/system");
     const mePromise = api.get<{ user: User }>("/api/me").catch(() => null);
@@ -604,11 +634,11 @@ export default function App() {
     const me = await mePromise;
     if (me) {
       setSession({ system, user: me.user, loading: false });
-      await loadStudents();
+      await Promise.all([loadStudents(), loadDashboard(), loadInsights()]);
       return;
     }
     setSession({ system, user: null, loading: false });
-  }, [loadStudents]);
+  }, [loadDashboard, loadInsights, loadStudents]);
 
   useEffect(() => {
     loadSession().catch((err) => {
@@ -644,6 +674,23 @@ export default function App() {
     runningCourse ? 5000 : null
   );
 
+  useInterval(
+    () => {
+      loadDashboard().catch((err) => setError(err.message));
+    },
+    dashboard?.metrics.activeJobCount ? 5000 : null
+  );
+
+  const openDashboardCourse = useCallback(
+    async (item: DashboardCourseSummary) => {
+      setSelectedStudentId(item.studentId);
+      await loadCourses(item.studentId);
+      setSelectedCourseId(item.courseId);
+      setView("courses");
+    },
+    [loadCourses]
+  );
+
   if (session.loading) {
     return (
       <main className="center-screen">
@@ -658,7 +705,7 @@ export default function App() {
         setupRequired={Boolean(session.system?.setupRequired)}
         onAuthed={async (user) => {
           setSession((state) => ({ ...state, user, system: state.system ? { ...state.system, setupRequired: false } : null }));
-          await loadStudents();
+          await Promise.all([loadStudents(), loadDashboard(), loadInsights()]);
         }}
       />
     );
@@ -673,82 +720,57 @@ export default function App() {
   }
 
   return (
-    <main className={sidebarCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark">
-            <BookOpen size={20} />
-          </div>
-          <div>
-            <h1>备课工作台</h1>
-            <p>
-              {session.system?.workspaceRoot}
-              {session.system?.codexRunner === "ssh" ? " · Codex Linux SSH" : " · Codex 本机"}
-            </p>
-          </div>
-          <button
-            className="tiny-icon-button sidebar-toggle"
-            title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
-            aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
-            onClick={() => setSidebarCollapsed((value) => !value)}
-          >
-            {sidebarCollapsed ? <ChevronsRight size={17} /> : <ChevronsLeft size={17} />}
+    <AppShell
+      view={view}
+      collapsed={sidebarCollapsed}
+      user={session.user}
+      system={session.system}
+      error={error}
+      onViewChange={setView}
+      onToggle={() => setSidebarCollapsed((value) => !value)}
+      onDismissError={() => setError("")}
+      utility={
+        <>
+          <button className="utility-action" onClick={() => setAccountOpen((value) => !value)}>
+            <Settings size={17} />
+            <span>账号与系统</span>
           </button>
-        </div>
-
-        {sidebarCollapsed ? null : (
-          <>
-            <nav className="nav-list">
-              <button className={view === "students" ? "active" : ""} onClick={() => setView("students")}>
-                <UserRound size={18} />
-                学生
-              </button>
-              <button className={view === "materials" ? "active" : ""} onClick={() => setView("materials")}>
-                <Library size={18} />
-                资料库
-              </button>
-            </nav>
-
-            <section className="sidebar-footer">
-              <button className="logout-button" onClick={() => setAccountOpen((value) => !value)}>
-                <Settings size={17} />
-                账号设置
-              </button>
-              {accountOpen ? (
-                <AccountSettings
-                  user={session.user}
-                  onSaved={(user) => {
-                    setSession((state) => ({ ...state, user }));
-                    setAccountOpen(false);
-                  }}
-                  onClose={() => setAccountOpen(false)}
-                  onError={setError}
-                />
-              ) : null}
-              <button
-                className="logout-button"
-                onClick={async () => {
-                  await api.post("/api/logout");
-                  setSession((state) => ({ ...state, user: null }));
-                }}
-              >
-                <LogOut size={17} />
-                退出登录
-              </button>
-            </section>
-          </>
-        )}
-      </aside>
-
-      <section className="workspace">
-        {error ? (
-          <div className="error-bar">
-            <span>{error}</span>
-            <button onClick={() => setError("")}>关闭</button>
-          </div>
-        ) : null}
-
-        {view === "materials" ? (
+          {accountOpen ? (
+            <AccountSettings
+              user={session.user}
+              onSaved={(user) => {
+                setSession((state) => ({ ...state, user }));
+                setAccountOpen(false);
+              }}
+              onClose={() => setAccountOpen(false)}
+              onError={setError}
+            />
+          ) : null}
+          <button
+            className="utility-action"
+            onClick={async () => {
+              await api.post("/api/logout");
+              setSession((state) => ({ ...state, user: null }));
+            }}
+          >
+            <LogOut size={17} />
+            <span>退出登录</span>
+          </button>
+        </>
+      }
+    >
+        {view === "dashboard" ? (
+          <DashboardView
+            dashboard={dashboard}
+            insights={insights}
+            loading={dashboardLoading}
+            userName={session.user.username}
+            onRefresh={() => Promise.all([loadDashboard(), loadInsights()]).catch((err) => setError(err.message))}
+            onRefreshInsights={() => loadInsights().catch((err) => setError(err.message))}
+            onNavigate={setView}
+            onOpenCourse={(item) => openDashboardCourse(item).catch((err) => setError(err.message))}
+          />
+        ) : view === "materials" ? (
           <MaterialsView system={session.system} onError={setError} />
         ) : (
           <StudentWorkspace
@@ -770,11 +792,12 @@ export default function App() {
             onCreated={async (course) => {
               await loadStudents();
               await loadCourses(course.studentId);
+              await loadDashboard();
               setSelectedCourseId(course.id);
             }}
             onRefresh={async () => {
               if (selectedStudentId) {
-                await Promise.all([loadStudents(), loadCourses(selectedStudentId)]);
+                await Promise.all([loadStudents(), loadCourses(selectedStudentId), loadDashboard()]);
               }
             }}
             onStudentSaved={async () => {
@@ -784,19 +807,18 @@ export default function App() {
             onDeleteCourse={async (course) => {
               if (!window.confirm(`删除课程「${course.desiredContent || "未命名课程"}」？已生成文件会保留。`)) return;
               await api.del(`/api/courses/${course.id}`);
-              await Promise.all([loadStudents(), loadCourses(course.studentId)]);
+              await Promise.all([loadStudents(), loadCourses(course.studentId), loadDashboard()]);
             }}
             onDeleteStudent={async (student) => {
               if (!window.confirm(`删除学生「${student.name}」？课程记录会从网页移除，但已生成文件会保留。`)) return;
               await api.del(`/api/students/${student.id}`);
               setSelectedCourseId("");
-              await loadStudents();
+              await Promise.all([loadStudents(), loadDashboard()]);
             }}
             onError={setError}
           />
         )}
-      </section>
-    </main>
+    </AppShell>
   );
 }
 
@@ -1171,37 +1193,13 @@ function StudentWorkspace({
 
   return (
     <div className="student-workspace command-layout">
-      <section className="student-roster-panel">
-        <div className="source-head">
-          <div>
-            <p className="eyebrow">学生库</p>
-            <h2>学生</h2>
-          </div>
-          <span>{students.length}</span>
-        </div>
-        <CreateStudentForm onCreated={onCreateStudent} onError={onError} />
-        <div className="student-roster-list">
-          {students.map((item) => (
-            <div key={item.id} className={item.id === selectedStudentId ? "student-chip active" : "student-chip"}>
-              <button className="student-source-main" onClick={() => onSelectStudent(item.id)}>
-                <span className="student-avatar">{item.name.slice(0, 1)}</span>
-                <span>
-                  <strong>{item.name}</strong>
-                  <small>{item.stage || "未设置学段"} · {item.courseCount || 0} 节课</small>
-                </span>
-              </button>
-              <button
-                className="icon-button danger-icon"
-                title="删除学生"
-                aria-label="删除学生"
-                onClick={() => onDeleteStudent(item).catch((err) => onError(err.message))}
-              >
-                <Trash2 size={15} />
-              </button>
-            </div>
-          ))}
-        </div>
-      </section>
+      <StudentList
+        students={students}
+        selectedId={selectedStudentId}
+        createSlot={<CreateStudentForm onCreated={onCreateStudent} onError={onError} />}
+        onSelect={onSelectStudent}
+        onDelete={(item) => onDeleteStudent(item).catch((err) => onError(err.message))}
+      />
 
       {student ? (
         <>
@@ -1268,41 +1266,12 @@ function StudentWorkspace({
               <StudentProfilePanel student={student} onSaved={onStudentSaved} onError={onError} />
             </details>
 
-            <section className="course-board">
-              <div className="section-title">
-                <div>
-                  <strong>课程队列</strong>
-                  <small>{orderedCourses.length} 节课程</small>
-                </div>
-                <FolderOpen size={18} />
-              </div>
-              {orderedCourses.length === 0 ? (
-                <div className="quiet-empty">暂无课程</div>
-              ) : (
-                <div className="course-list">
-                  {orderedCourses.map((course) => (
-                    <div key={course.id} className={course.id === selectedCourse?.id ? "course-item active" : "course-item"}>
-                      <button className="course-select" onClick={() => onSelectCourse(course.id)}>
-                        <span className={statusClass(course.status)}>{statusLabel(course.status)}</span>
-                        <strong>{course.desiredContent || "未命名课程"}</strong>
-                        <small>
-                          {course.type === "trial" ? "试听课" : "正式课"} · {course.grade || "年级待填"} · {formatDate(course.lessonTime)}
-                        </small>
-                        <small className="course-continuity-state">{postClassStateLabel(course)}</small>
-                      </button>
-                      <button
-                        className="icon-button danger-icon"
-                        title="删除课程"
-                        aria-label="删除课程"
-                        onClick={() => onDeleteCourse(course).catch((err) => onError(err.message))}
-                      >
-                        <Trash2 size={15} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
+            <CourseQueue
+              courses={orderedCourses}
+              selectedId={selectedCourse?.id}
+              onSelect={onSelectCourse}
+              onDelete={(course) => onDeleteCourse(course).catch((err) => onError(err.message))}
+            />
           </section>
 
           <section className="course-stage-panel">
@@ -1829,6 +1798,7 @@ function AiLessonDraftPanel({
       durationMinutes: data.draft.course.durationMinutes || 90,
       localFiles: data.draft.course.localFiles || "",
       notes: data.draft.course.notes || input,
+      codexPromptOverride: data.draft.course.codexPromptOverride || "",
       autoRun: false
     });
     setDraftContinue(null);
@@ -2224,6 +2194,26 @@ function CourseForm({
 
   return (
     <form className="course-form" onSubmit={submit}>
+      <TemplateManager
+        draft={{
+          type: form.type === "trial" ? "trial" : "formal",
+          durationMinutes: form.durationMinutes,
+          textbook: form.textbook,
+          lessonKind: form.lessonKind,
+          notes: form.notes,
+          codexPromptOverride: form.codexPromptOverride
+        }}
+        onApply={(template) => setForm((current) => ({
+          ...current,
+          type: template.type,
+          durationMinutes: template.durationMinutes,
+          textbook: template.textbook,
+          lessonKind: template.lessonKind,
+          notes: template.notes,
+          codexPromptOverride: template.codexPromptOverride
+        }))}
+        onError={onError}
+      />
       <div className="segmented">
         <button type="button" className={form.type === "formal" ? "active" : ""} onClick={() => update("type", "formal")}>
           正式课
@@ -2231,6 +2221,11 @@ function CourseForm({
         <button type="button" className={form.type === "trial" ? "active" : ""} onClick={() => update("type", "trial")}>
           试听课
         </button>
+      </div>
+
+      <div className="composer-step">
+        <span>01</span>
+        <div><strong>课程基础</strong><small>确定时间、学段与课程类型</small></div>
       </div>
 
       <div className="form-grid">
@@ -2287,6 +2282,11 @@ function CourseForm({
         </label>
       </div>
 
+      <div className="composer-step">
+        <span>02</span>
+        <div><strong>本课目标</strong><small>说清楚这节课要解决的问题</small></div>
+      </div>
+
       {continuitySuggestion ? (
         <div className="continuity-seed">
           <div>
@@ -2314,6 +2314,10 @@ function CourseForm({
           required
         />
       </label>
+      <div className="composer-step">
+        <span>03</span>
+        <div><strong>资料与生成</strong><small>补充依据，决定是否立即运行</small></div>
+      </div>
       <label>
         本地题目/资料路径
         <textarea
@@ -2384,6 +2388,15 @@ function CourseForm({
       <label>
         备注
         <textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} rows={2} />
+      </label>
+      <label>
+        AI 生成要求
+        <textarea
+          value={form.codexPromptOverride}
+          onChange={(event) => update("codexPromptOverride", event.target.value)}
+          placeholder="可选：写入长期复用的风格、难度或版式要求"
+          rows={2}
+        />
       </label>
 
       <div className="form-footer">
@@ -3043,7 +3056,7 @@ function CourseDetail({
           </p>
         </div>
         <div className="button-row command-bar">
-          <button className="ghost-button" disabled={checkingQuality || polling} onClick={checkQuality}>
+          <button className="ghost-button" disabled={checkingQuality || polling || previewFiles.length === 0} onClick={checkQuality}>
             {checkingQuality ? <Loader2 className="spin" size={17} /> : <CheckCircle2 size={17} />}
             质量检查
           </button>
@@ -3067,9 +3080,35 @@ function CourseDetail({
             <Trash2 size={17} />
             删除课程
           </button>
-          <button className="primary-button" disabled={busy || polling} onClick={() => runCourse()}>
-            {busy || polling ? <Loader2 className="spin" size={17} /> : <Play size={17} />}
-            调用 Codex
+          <button
+            className="primary-button course-primary-action"
+            disabled={busy || polling}
+            onClick={() => {
+              if (course.status === "completed") {
+                setDetailTab("preview");
+              } else if ((course.status === "failed" || course.status === "canceled") && job) {
+                continueJob(job.id);
+              } else {
+                runCourse();
+              }
+            }}
+          >
+            {busy || polling ? (
+              <Loader2 className="spin" size={17} />
+            ) : course.status === "completed" ? (
+              <Eye size={17} />
+            ) : course.status === "failed" || course.status === "canceled" ? (
+              <RefreshCcw size={17} />
+            ) : (
+              <Play size={17} />
+            )}
+            {polling
+              ? "生成进行中"
+              : course.status === "completed"
+                ? "查看课程产物"
+                : course.status === "failed" || course.status === "canceled"
+                  ? "继续生成"
+                  : "开始生成"}
           </button>
         </div>
       </header>
@@ -3104,6 +3143,13 @@ function CourseDetail({
           </div>
         ) : null}
       </section>
+
+      <PreparationTimeline
+        course={course}
+        job={job}
+        fileCount={previewFiles.length}
+        qualityReady={Boolean(currentQuality)}
+      />
 
       {editing ? (
         <CourseSettingsPanel
@@ -3162,30 +3208,7 @@ function CourseDetail({
                   单独修 PDF 图
                 </button>
               </form>
-              <div className="file-list">
-                {previewFiles.length === 0 ? (
-                  <div className="quiet-empty">等待生成文件</div>
-                ) : (
-                  previewFiles.map((file) => (
-                    <div key={file.path} className={file.path === selectedFile?.path ? "file-row active" : "file-row"}>
-                      <button className="file-select" onClick={() => setSelectedPath(file.path)}>
-                        <span>{file.name}</span>
-                        <small>{courseFileKindLabel(file)}</small>
-                      </button>
-                      <a
-                        className="icon-button"
-                        title="新页面打开"
-                        aria-label="新页面打开"
-                        href={`/viewer?path=${encodeURIComponent(file.path)}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <ExternalLink size={15} />
-                      </a>
-                    </div>
-                  ))
-                )}
-              </div>
+              <OutputReview files={previewFiles} selectedPath={selectedFile?.path || ""} onSelect={setSelectedPath} />
             </section>
           </div>
         ) : null}
@@ -3577,6 +3600,7 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<RagSearchResult[]>([]);
   const [busy, setBusy] = useState(false);
+  const [materialFilter, setMaterialFilter] = useState<"all" | "indexed" | "attention">("all");
 
   const loadMaterials = useCallback(async () => {
     const data = await api.get<{ materials: Material[]; chunkCount: number; uploadRoot: string }>("/api/materials");
@@ -3694,20 +3718,27 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
   const totalMaterialCount = materials.length;
   const questionCount = useMemo(() => materials.reduce((sum, material) => sum + (material.questionCount || 0), 0), [materials]);
   const snippetCount = useMemo(() => materials.reduce((sum, material) => sum + (material.snippetCount || 0), 0), [materials]);
-  const browserEntries = useMemo(() => buildMaterialEntries(materials, uploadRoot, currentPath), [materials, uploadRoot, currentPath]);
+  const filteredMaterials = useMemo(() => materials.filter((material) => {
+    if (materialFilter === "indexed") return material.status === "indexed";
+    if (materialFilter === "attention") return material.status !== "indexed";
+    return true;
+  }), [materialFilter, materials]);
+  const browserEntries = useMemo(() => buildMaterialEntries(filteredMaterials, uploadRoot, currentPath), [filteredMaterials, uploadRoot, currentPath]);
 
   return (
     <section className="materials-view settings-workspace">
-      <header className="workspace-header workspace-hero">
-        <div>
-          <p className="eyebrow">资料库</p>
-          <h2>本地 RAG 索引</h2>
-          <span>{uploadRoot || "资料库/网页上传"}</span>
-        </div>
-        <div className="header-actions">
+      <MaterialsLibraryHeader
+        uploadRoot={uploadRoot}
+        total={totalMaterialCount}
+        indexed={indexedCount}
+        questions={questionCount}
+        snippets={snippetCount}
+        searchable={chunkCount}
+        actions={
+          <>
           <button className="ghost-button" onClick={reindex} disabled={busy}>
             {busy ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
-            增量索引资料库
+            更新索引
           </button>
           <button className="ghost-button" onClick={showDocConversionNotice}>
             <FileText size={16} />
@@ -3723,35 +3754,9 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
             上传文件夹
             <input type="file" multiple {...folderPickerProps} onChange={upload} />
           </label>
-        </div>
-      </header>
-
-      <div className="stat-row materials-stats">
-        <div>
-          <Boxes size={18} />
-          <strong>{totalMaterialCount}</strong>
-          <span>资料文件</span>
-          <small>{indexedCount} 个已索引</small>
-        </div>
-        <div>
-          <FileText size={18} />
-          <strong>{questionCount}</strong>
-          <span>题目记录</span>
-          <small>优先用于选题</small>
-        </div>
-        <div>
-          <BookOpen size={18} />
-          <strong>{snippetCount}</strong>
-          <span>参考片段</span>
-          <small>知识点、解析与说明</small>
-        </div>
-        <div>
-          <Search size={18} />
-          <strong>{chunkCount}</strong>
-          <span>可检索内容</span>
-          <small>题目 + 片段</small>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {reindexJob ? (
         <section className="reindex-status">
@@ -3798,33 +3803,7 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
           </section>
 
           {results.length > 0 ? (
-            <section className="rag-results">
-              {results.map((result) => (
-                <article key={result.chunk.id} className="result-item">
-                  <strong>
-                    {result.question ? `${result.question.questionNumber || result.question.label} · ` : ""}
-                    {result.material.title}
-                  </strong>
-                  <small>{result.material.path}</small>
-                  {result.question ? (
-                    <div className="result-meta">
-                      <span>{sourceKindLabel(result.question.sourceKind)}</span>
-                      <span>{result.question.questionType}</span>
-                      <span>难度：{result.question.difficulty}</span>
-                      <span>{result.question.hasAnswer ? "有解析" : "需验算"}</span>
-                      {result.question.examSource ? <span>{result.question.examSource}</span> : null}
-                    </div>
-                  ) : result.snippet ? (
-                    <div className="result-meta">
-                      <span>{result.snippet.kind}</span>
-                      <span>知识参考</span>
-                    </div>
-                  ) : null}
-                  <span className="result-reason">{result.reason}</span>
-                  <p>{result.excerpt}</p>
-                </article>
-              ))}
-            </section>
+            <SearchResults results={results} />
           ) : (
             <div className="quiet-empty">输入关键词检索题目、解析和知识片段</div>
           )}
@@ -3837,6 +3816,11 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
                 <strong>{currentPath || "全部资料"}</strong>
                 <small>{currentPath ? "当前文件夹" : "文件夹优先显示"}</small>
               </div>
+              <div className="material-status-filters" aria-label="筛选资料状态">
+                <button className={materialFilter === "all" ? "active" : ""} onClick={() => setMaterialFilter("all")}>全部</button>
+                <button className={materialFilter === "indexed" ? "active" : ""} onClick={() => setMaterialFilter("indexed")}>已索引</button>
+                <button className={materialFilter === "attention" ? "active" : ""} onClick={() => setMaterialFilter("attention")}>需处理</button>
+              </div>
               {currentPath ? (
                 <button className="ghost-button" onClick={() => setCurrentPath(parentMaterialPath(currentPath))}>
                   <ArrowLeft size={16} />
@@ -3847,7 +3831,7 @@ function MaterialsView({ system, onError }: { system: SystemInfo | null; onError
             {materials.length === 0 ? (
               <div className="quiet-empty">暂无索引资料</div>
             ) : browserEntries.length === 0 ? (
-              <div className="quiet-empty">这个文件夹里暂无可显示资料</div>
+              <div className="quiet-empty">这个筛选下暂无可显示资料</div>
             ) : (
               browserEntries.map((entry) => (
                 entry.kind === "folder" ? (

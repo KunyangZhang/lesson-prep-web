@@ -17,6 +17,8 @@ import {
 import { backupFileName, createAppBackup } from "./backup.js";
 import { config, ensureAppDirs, logsDir, tempUploadDir, uploadRoot } from "./config.js";
 import { createDiagnostics } from "./diagnostics.js";
+import { buildDashboardSnapshot } from "./dashboard.js";
+import { buildLearningInsights } from "./insights.js";
 import { resendCourseFeishuNotification, syncCourseToFeishu } from "./feishuSync.js";
 import { courseClassroomPdfFileName, recoverCourseOutputDir } from "./courseOutput.js";
 import { assertWithinWorkspace, listCourseFiles, uniqueDestination } from "./files.js";
@@ -50,6 +52,12 @@ import {
   searchRag
 } from "./rag.js";
 import { authRateLimit, clearAuthRateLimit, securityHeaders } from "./security.js";
+import {
+  createLessonTemplate,
+  deleteLessonTemplate,
+  listLessonTemplates,
+  updateLessonTemplate
+} from "./templates.js";
 import {
   fitFilenameComponent,
   Store,
@@ -1701,6 +1709,50 @@ app.get("/api/admin/diagnostics", requireAuth, (req, res) => {
   res.json({ diagnostics: createDiagnostics(store) });
 });
 
+app.get("/api/dashboard", requireAuth, (req, res) => {
+  store.reload();
+  res.json({ dashboard: buildDashboardSnapshot(store.data) });
+});
+
+app.get("/api/insights", requireAuth, (req, res) => {
+  store.reload();
+  res.json({ insights: buildLearningInsights(store.data) });
+});
+
+app.get("/api/templates", requireAuth, (req, res) => {
+  res.json({ templates: listLessonTemplates(store) });
+});
+
+app.post("/api/templates", requireAuth, (req, res) => {
+  try {
+    res.status(201).json({ template: createLessonTemplate(store, req.body || {}) });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.patch("/api/templates/:templateId", requireAuth, (req, res) => {
+  try {
+    const template = updateLessonTemplate(store, routeParam(req, "templateId"), req.body || {});
+    if (!template) {
+      res.status(404).json({ error: "Template not found." });
+      return;
+    }
+    res.json({ template });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.delete("/api/templates/:templateId", requireAuth, (req, res) => {
+  const deleted = deleteLessonTemplate(store, routeParam(req, "templateId"));
+  if (!deleted) {
+    res.status(404).json({ error: "Template not found." });
+    return;
+  }
+  res.json({ deleted: true });
+});
+
 app.get("/api/students", requireAuth, (req, res) => {
   const coursesByStudent = new Map<string, number>();
   for (const course of store.data.courses) {
@@ -2022,6 +2074,7 @@ app.post("/api/students/:studentId/courses", requireAuth, (req, res) => {
     durationMinutes: parseDuration(req.body.durationMinutes),
     localFiles: requiredString(req.body.localFiles),
     notes: requiredString(req.body.notes),
+    codexPromptOverride: requiredString(req.body.codexPromptOverride),
     outputDir,
     status: "draft",
     createdAt: now,
@@ -2053,7 +2106,8 @@ function updateCourseFromBody(course: Course, body: Record<string, unknown>) {
     "desiredContent",
     "lessonTime",
     "localFiles",
-    "notes"
+    "notes",
+    "codexPromptOverride"
   ] as const;
   for (const field of allowedStringFields) {
     if (field in body) {

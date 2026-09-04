@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
-import type { Course, Db, Job, Material, Student, User } from "./types.js";
+import type { Course, Db, Job, LessonTemplate, Material, Student, User } from "./types.js";
 
 interface StoreOptions {
   persist?: boolean;
@@ -14,7 +14,8 @@ const emptyDb = (): Db => ({
   courses: [],
   jobs: [],
   materials: [],
-  ragChunks: []
+  ragChunks: [],
+  templates: []
 });
 
 export class Store {
@@ -36,6 +37,7 @@ export class Store {
     this.data.jobs = mergeEntities(this.data.jobs, loaded.jobs);
     this.data.materials = mergeEntities(this.data.materials, loaded.materials);
     this.data.ragChunks = mergeEntities(this.data.ragChunks, loaded.ragChunks);
+    this.data.templates = mergeEntities(this.data.templates, loaded.templates);
   }
 
   save() {
@@ -117,6 +119,19 @@ export class Store {
     if (index >= 0) this.data.materials[index] = material;
     else this.data.materials.push(material);
     this.save();
+  }
+
+  addTemplate(template: LessonTemplate) {
+    this.data.templates.push(template);
+    this.save();
+  }
+
+  deleteTemplate(templateId: string) {
+    const template = this.data.templates.find((item) => item.id === templateId);
+    if (!template) return false;
+    this.data.templates = this.data.templates.filter((item) => item.id !== templateId);
+    this.save();
+    return true;
   }
 }
 

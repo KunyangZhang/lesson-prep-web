@@ -142,9 +142,18 @@ fs.writeFileSync(
 );
 fs.writeFileSync(
   path.join(outputDir, "课后反馈.md"),
-  "# 课后反馈\n\n本节课重点是向量数量积，课后继续练习坐标运算。\n\n" + repeated.repeat(3) + "\n",
+  "【学生姓名】：烟测学生\n【上课日期】：2026-06-12\n【授课科目】：高中数学\n【本节课核心内容】\n向量数量积的坐标运算、几何意义与常见易错点。\n【学生课堂掌握情况】\n1、能够使用坐标公式完成向量数量积计算，并解释每一步依据。\n2、能够识别漏加与符号错误，并通过代入和估算进行验算。\n【课后作业】：\n完成两道坐标运算题和一道数量积几何意义辨析题。\n",
   "utf8"
 );
+const workDir = path.join(outputDir, "_work");
+fs.mkdirSync(workDir, { recursive: true });
+for (const fileName of ["连续学习档案.md", "题目提取.md", "答案核对表.md", "课件生成计划.md", "逐字稿丰富清单.md"]) {
+  fs.writeFileSync(
+    path.join(workDir, fileName),
+    "# " + fileName.replace(/\\.md$/, "") + "\n\n已记录本次烟测课程的教学目标、题目顺序、答案核验与课堂推进信息。\n",
+    "utf8"
+  );
+}
 const pdf = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 160] >>\nendobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer\n<< /Root 1 0 R /Size 4 >>\nstartxref\n181\n%%EOF\n";
 fs.writeFileSync(path.join(outputDir, "课堂课件.pdf"), pdf, "latin1");
 
@@ -310,7 +319,10 @@ async function main() {
   const autoJob = autoCourseResult.data.job;
   assert(autoJob?.id, "auto-run course did not create a Codex job");
   const completed = await waitForJob(autoJob.id);
-  assert(completed.job.status === "completed", `auto Codex job did not complete: ${completed.job.status}`);
+  assert(
+    completed.job.status === "completed",
+    `auto Codex job did not complete: ${completed.job.status}; ${completed.job.error || "no job error"}\n${completed.logTail}`
+  );
   assert(["pass", "warn"].includes(completed.job.quality?.status), `auto Codex quality was unusable: ${completed.job.quality?.status}`);
   assert(completed.logTail.includes("fake Codex completed"), "auto Codex log did not include fake Codex output");
   assert(completed.logTail.includes("trial-lesson-prep"), "auto Codex prompt did not use packaged trial skill");
@@ -339,11 +351,28 @@ async function main() {
   const repeated = "这一段用于保证 Markdown 内容量足够，包含课堂提问、学生可能回答、追问、板书和讲解节奏。";
   const teacherMd = `# 老师逐字稿\n\n题目：已知 $\\vec{a}=(2,-1)$，$\\vec{b}=(3,4)$，求 $\\vec{a}\\cdot\\vec{b}$。\n\n${repeated.repeat(8)}\n`;
   const knowledgeMd = `# 知识点详解\n\n本文件用于说明本节课的核心概念、常见误区和课堂推进顺序。\n\n## 数量积\n\n$\\vec{a}\\cdot\\vec{b}=x_1x_2+y_1y_2$。\n\n${repeated.repeat(8)}\n`;
-  const feedbackMd = `# 课后反馈\n\n本节课关注向量数量积，课后继续练习坐标运算。\n\n${repeated.repeat(3)}\n`;
+  const feedbackMd = `【学生姓名】：烟测学生
+【上课日期】：2026-06-12
+【授课科目】：高中数学
+【本节课核心内容】
+向量数量积的坐标运算、几何意义与常见易错点。
+【学生课堂掌握情况】
+1、能够使用坐标公式完成向量数量积计算，并说明每一步依据。
+2、能够识别漏加与符号错误，并通过代入和估算完成验算。
+【课后作业】：
+完成两道坐标运算题和一道数量积几何意义辨析题。
+`;
   fs.writeFileSync(path.join(course.outputDir, "老师逐字稿.md"), teacherMd, "utf8");
   fs.writeFileSync(path.join(course.outputDir, "知识点详解.md"), knowledgeMd, "utf8");
   fs.writeFileSync(path.join(course.outputDir, "课后反馈.md"), feedbackMd, "utf8");
-  writePdf(path.join(course.outputDir, "烟测学生_2026-06-12_20-00_向量数量积 smoke.pdf"));
+  for (const pdfName of [
+    "烟测学生_2026-06-12_20-00_向量数量积 smoke.pdf",
+    "烟测学生_2026-06-12_20-00_向量数量积 smoke_授课一体版.pdf",
+    "课后作业.pdf",
+    "课后作业参考答案.pdf"
+  ]) {
+    writePdf(path.join(course.outputDir, pdfName));
+  }
 
   const filesResult = await request(`/api/courses/${course.id}/files`);
   const files = filesResult.data.files;
@@ -362,7 +391,10 @@ async function main() {
   assert(String(viewer.data).includes("id=\"root\""), "viewer route did not return the frontend app shell");
 
   const qualityResult = await request(`/api/courses/${course.id}/quality`, { method: "POST" });
-  assert(["pass", "warn"].includes(qualityResult.data.quality?.status), "quality check did not return a usable status");
+  assert(
+    ["pass", "warn"].includes(qualityResult.data.quality?.status),
+    `quality check did not return a usable status: ${JSON.stringify(qualityResult.data.quality?.items || [])}`
+  );
   assert(qualityResult.data.quality.items.some((item) => item.label.endsWith(".pdf")), "quality check did not inspect pdf");
 
   const backupResult = await request("/api/admin/backup");

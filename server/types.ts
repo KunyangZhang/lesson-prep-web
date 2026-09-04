@@ -146,6 +146,20 @@ export interface Material {
   updatedAt: string;
 }
 
+export interface LessonTemplate {
+  id: string;
+  name: string;
+  description: string;
+  type: CourseType;
+  durationMinutes: number;
+  textbook: string;
+  lessonKind: string;
+  notes: string;
+  codexPromptOverride: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface RagChunk {
   id: string;
   materialId: string;
@@ -163,6 +177,7 @@ export interface Db {
   jobs: Job[];
   materials: Material[];
   ragChunks: RagChunk[];
+  templates: LessonTemplate[];
 }
 
 export interface CourseFile {
@@ -172,4 +187,70 @@ export interface CourseFile {
   kind: "markdown" | "pdf" | "image" | "text" | "other";
   size: number;
   updatedAt: string;
+}
+
+export type DashboardNextAction = "prepare" | "monitor" | "retry" | "review" | "post_class";
+
+export interface DashboardCourseSummary {
+  courseId: string;
+  studentId: string;
+  studentName: string;
+  title: string;
+  type: CourseType;
+  lessonTime: string;
+  durationMinutes: number;
+  status: CourseStatus;
+  updatedAt: string;
+  nextAction: DashboardNextAction;
+}
+
+export interface DashboardAttentionItem extends DashboardCourseSummary {
+  reason: string;
+}
+
+export interface DashboardActivity {
+  id: string;
+  kind: "course" | "job" | "material";
+  title: string;
+  detail: string;
+  status: string;
+  occurredAt: string;
+  courseId?: string;
+  studentId?: string;
+}
+
+export interface DashboardSnapshot {
+  generatedAt: string;
+  metrics: {
+    studentCount: number;
+    courseCount: number;
+    completedCourseCount: number;
+    activeJobCount: number;
+    upcomingCourseCount: number;
+    postClassPendingCount: number;
+    indexedMaterialCount: number;
+    indexedKnowledgeCount: number;
+    averageQualityScore: number | null;
+  };
+  upcomingCourses: DashboardCourseSummary[];
+  attention: DashboardAttentionItem[];
+  recentActivity: DashboardActivity[];
+}
+
+export interface LearningInsights {
+  generatedAt: string;
+  summary: {
+    weeklyLessonCount: number;
+    completionRate: number;
+    postClassConfirmationRate: number;
+    refineRate: number;
+    averageQualityScore: number | null;
+  };
+  weeklyLessons: Array<{ start: string; end: string; label: string; count: number }>;
+  recurringWeakPoints: Array<{ label: string; count: number }>;
+  qualityTrend: Array<{ jobId: string; courseId: string; score: number; checkedAt: string }>;
+  revisions: {
+    coursesWithRevisions: number;
+    totalRefinements: number;
+  };
 }
