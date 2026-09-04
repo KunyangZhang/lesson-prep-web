@@ -1,201 +1,214 @@
-# 备课工作台
+# 🎓 AI 智能备课工作台
 
-一个本地优先的备课 Web 应用，面向单人/小团队部署。
+> 面向一对一数学教师的 AI 备课工作台：把学生信息、资料检索、内容生成、质量校验与课后交付收敛到一条可追踪、可干预的工作流。
 
-## 功能
+![Status](https://img.shields.io/badge/status-MVP-2563eb)
+![Product](https://img.shields.io/badge/product-AI%20Workflow-7c3aed)
+![RAG](https://img.shields.io/badge/retrieval-Hybrid%20RAG-059669)
+![Stack](https://img.shields.io/badge/stack-React%20%2B%20Node.js-111827)
 
-- 首次初始化管理员账号，之后登录使用。
-- 创建学生，按学生创建试听课或正式课。
-- 课程创建后可自动调用 `codex exec`，使用项目内置 `trial-lesson-prep` 或 `formal-lesson-prep` skill 生成备课产物。
-- 读取课程目录里的 `md` 和 `pdf` 文件，直接在网页里预览。
-- 上传资料到资料库，抽取文本并建立本地 RAG 索引。
-- 支持单文件上传和文件夹上传，文件夹结构会保留。
-- 资料库按文件夹浏览，上传数量上限可配置。
-- 创建课程时会把 RAG 命中的资料片段写进 Codex prompt，减少重复搜索。
-- 课程生成后可以新页面预览 `md` / `pdf`，也可以基于上一次记录继续提交 Codex 补充内容。
-- 账号设置里可以下载应用数据备份，保存学生、课程、任务、资料索引等数据库快照。
-- 账号设置里可以运行系统诊断，检查 Codex、项目内置 skill、工作区、资料库和最近失败任务。
+## 项目概览
 
-## 开发运行
+| 维度 | 说明 |
+| --- | --- |
+| 目标用户 | 需要高频完成试听课、正式课备课与课后反馈的一对一数学教师 |
+| 核心问题 | 教学资料分散、通用 AI 输出不稳定、多工具切换导致备课与交付链路割裂 |
+| 产品方案 | 用课程工作台承载上下文，以 Hybrid RAG 提供资料依据，以 Agent Skill 固化备课方法，再通过质量门禁与人工补充完成交付 |
+| MVP 边界 | 优先跑通单教师的端到端闭环，不在当前阶段扩展排课、收费、家校 CRM 等教务功能 |
+| 我的职责 | 独立完成业务问题拆解、MVP 定义、交互设计、AI 工作流设计与全栈实现 |
 
-```powershell
-cd C:\Users\kunya\Documents\备课\lesson-prep-web
+## 为什么做
+
+传统备课并不只是“让大模型生成一份教案”。真实流程中，教师需要先理解学生情况，从本地资料中找题和解析，再分别制作课件、逐字稿、知识点详解和课后反馈。任一环节失去上下文，都会让 AI 输出难以直接使用。
+
+这个项目聚焦四个关键矛盾：
+
+- **资料很多，但检索成本高**：试卷、讲义和历史材料分散在不同文件夹，重复查找和筛选占用备课时间。
+- **能生成，不等于能上课**：试听课与正式课的目标、结构和交付物不同，单轮 Prompt 很难稳定复用。
+- **长任务缺少控制感**：生成耗时较长时，教师需要知道任务进度、失败原因，并能重试或继续补充。
+- **产物生成后仍要手工搬运**：本地文件、预览、日程和飞书资料如果彼此割裂，自动化只完成了半条链路。
+
+## 产品闭环
+
+```mermaid
+flowchart LR
+    A[建立学生与课程档案] --> B[上传讲义 / 试卷 / AI 草稿]
+    B --> C[文本解析与 OCR]
+    C --> D[Hybrid RAG 检索]
+    D --> E[试听课 / 正式课 Agent Skill]
+    E --> F[分阶段生成备课产物]
+    F --> G{质量门禁}
+    G -->|通过| H[在线预览与确认]
+    G -->|警告或失败| I[查看问题 / 补充要求 / 继续生成]
+    I --> E
+    H --> J[飞书文档、文件与日程交付]
+    J --> K[课后总结沉淀为下次备课上下文]
+```
+
+## MVP 功能地图
+
+### 1. 课程上下文：先理解“给谁上、上什么”
+
+- 以学生为主线管理学段、年级、薄弱点、常见错误和家长关注点。
+- 区分试听课与正式课，使用不同的输入字段、内容结构和交付标准。
+- 记录课后掌握情况、未解决问题与下节课建议，形成连续学习档案。
+
+### 2. 资料增强：让生成有依据，而不是凭空发挥
+
+- 支持单文件与文件夹上传，保留原有目录结构。
+- 对 Markdown、文本、Office 文档和 PDF 建立本地资料索引；扫描型 PDF 可先经过 OCR。
+- 组合向量语义检索与关键词检索，并支持重点资料加权。
+- 将命中的题目、解析和资料片段写入生成上下文，同时保留来源与命中原因，方便教师核对。
+
+### 3. Agent 工作流：把备课方法固化成可复用流程
+
+- 将试听课与正式课方法分别封装为 `trial-lesson-prep`、`formal-lesson-prep` Skill，而不是依赖一次性长 Prompt。
+- 正式备课采用阶段化生成：先处理 OCR 与题目提取，再并行生成课堂材料和教师材料。
+- 根据课程类型输出课堂课件、教师逐字稿、知识点详解、课后反馈；正式课额外生成教师授课一体版、作业与答案。
+- 支持在已有结果上补充要求并继续生成，避免一次失败后从头开始。
+
+### 4. 可控生成：把 AI 黑盒变成可运营任务
+
+- 显示排队、运行、完成、失败和取消等任务状态。
+- 保存运行日志与中间文件，提供超时 watchdog 和失败重试。
+- 允许教师上传补充材料、调整要求，并针对已有结果继续迭代。
+- 提供系统诊断和数据备份，降低单人使用时的维护成本。
+
+### 5. 结果交付：从“文件生成”走到“可以使用”
+
+- 在网页中直接预览 Markdown、PDF 与图片产物。
+- 任务完成后，可同步为飞书文档与云空间文件，并关联课程日程。
+- 课后总结回写学生档案，为下一次备课提供连续上下文。
+
+## 关键产品决策
+
+| 决策 | 为什么这样做 | 当前实现 |
+| --- | --- | --- |
+| 用 Skill 固化流程，而不是只写 Prompt | 备课包含稳定的方法、文件规范和检查步骤，需要版本化与复用 | 试听课、正式课两套内置 Skill |
+| 先做单教师闭环 | 核心风险是生成结果能否进入真实工作流，多角色协作不是 MVP 首要假设 | 本地优先、管理员账号、学生—课程工作台 |
+| 检索结果必须可核对 | RAG 的价值不仅是“找到了”，还要让教师知道内容来自哪里、为何命中 | 资料索引、来源片段、命中原因与资料预览 |
+| 长任务必须可恢复 | AI 生成存在超时、失败和追加要求，产品需要提供明确状态与恢复路径 | 任务状态、日志、watchdog、自动重试与继续生成 |
+| 质量检查只覆盖可判定项 | 文件齐全不代表教学内容正确，不能把格式分数包装成内容准确率 | 校验核心产物、文件有效性、反馈模板与中间过程文件 |
+
+## 质量与评测设计
+
+当前版本先把“可自动判定”的交付底线做成质量门禁：
+
+- **产物完整性**：检查不同课程类型要求的核心文件是否齐全、文件是否有效。
+- **格式可用性**：检查课后反馈是否仍含待填写占位符，是否符合固定交付模板。
+- **过程可追踪性**：检查题目提取、答案核对、课件计划等关键中间文件是否存在。
+- **失败可恢复性**：保留任务状态、日志与失败信息，支持重试和基于现有结果继续生成。
+
+下一阶段计划用真实备课样本建立评测集，重点跟踪：
+
+| 指标 | 目的 | 计划方法 |
+| --- | --- | --- |
+| 检索相关性 | 判断召回资料是否真正支持本节课 | 对 Top-K 结果做人工相关性标注 |
+| 内容正确性 | 避免答案、推导和知识点错误 | 教师抽检 + 错误类型归因 |
+| 首次可用率 | 衡量生成结果是否无需大改即可授课 | 记录首次通过、补充生成与人工重写比例 |
+| 交付耗时 | 判断工作流是否减少跨工具操作 | 记录从创建课程到确认交付的时长 |
+| 教师修改率 | 找出最需要优化的产物与环节 | 对比生成稿与最终确认稿差异 |
+
+> 当前仓库未对外宣称提效比例或内容准确率；在形成足量真实样本前，先保证评测口径可解释、结果可复查。
+
+## 系统结构
+
+```mermaid
+flowchart TB
+    UI[React 课程工作台] --> API[Express API]
+    API --> STORE[学生 / 课程 / 任务数据]
+    API --> RAG[本地 Hybrid RAG]
+    API --> JOB[Agent 任务编排]
+    RAG --> OCR[OCR 与文档解析]
+    JOB --> SKILL[试听课 / 正式课 Skill]
+    JOB --> QUALITY[质量检查]
+    QUALITY --> OUTPUT[Markdown / PDF 产物]
+    OUTPUT --> LARK[飞书文档 / 文件 / 日程]
+```
+
+技术栈：React 19、TypeScript、Vite、Node.js、Express、SQLite FTS、可选向量 Embedding、Codex CLI、PaddleOCR、lark-cli。
+
+## 快速开始
+
+环境要求：Node.js 22+，以及已完成登录的 Codex CLI。
+
+```bash
+git clone https://github.com/KunyangZhang/lesson-prep-web.git
+cd lesson-prep-web
+cp .env.example .env
 npm install
 npm run dev
 ```
 
-打开 `http://localhost:4178`。
+打开 `http://localhost:4178`，首次进入时初始化管理员账号。
 
-## 部署
-
-```powershell
-npm run build
-npm start
-```
-
-部署前可以先做一次自检：
-
-```powershell
-npm run deploy:check
-```
-
-它会检查 Node 版本、构建产物、两个项目内置 skill、工作区/资料库路径、Codex CLI 或 SSH 运行配置。出现 `FAIL` 时先按提示修好再启动生产服务；`WARN` 通常是不阻断启动但建议确认的项。
-
-改动后还可以跑一次隔离冒烟测试：
-
-```powershell
-npm run build
-npm run smoke
-```
-
-`smoke` 会用临时工作区和临时数据目录启动一套服务，验证初始化账号、登录、学生/课程增删改、资料上传、RAG 检索、课程附件、Markdown/PDF 预览入口、质量检查、备份和诊断接口。它还会用一个临时的 fake Codex 命令验证“创建课程后后台自动启动 Codex 任务、接收 prompt、生成核心文件、完成质量检查”的链路，不会写入真实备课数据。正式课固定生成原版学生课堂 PDF 和新增教师授课一体版 PDF；试听课保持原有单 PDF 交付。
-
-项目已经内置两个备课 skill：
+项目内置两个备课 Skill，随仓库直接使用：
 
 - `skills/trial-lesson-prep`
 - `skills/formal-lesson-prep`
 
-部署到服务器时请把整个 `lesson-prep-web` 项目目录一起上传，不需要再手动把这两个 skill 安装到服务器的 `~/.codex/skills`。
+## 配置说明
 
-Linux 服务器部署可以参考：
+常用配置集中在 `.env`，完整示例见 [`.env.example`](./.env.example) 和 [`deploy/env.production.example`](./deploy/env.production.example)。
 
-- `deploy/env.production.example`: 生产环境变量示例。
-- `deploy/systemd/lesson-prep-web.service.example`: systemd 常驻服务示例。
-- `deploy/nginx/lesson-prep-web.conf.example`: Nginx 反向代理示例。
+| 配置组 | 关键变量 | 用途 |
+| --- | --- | --- |
+| 工作区 | `PREP_WORKSPACE`、`PREP_MATERIAL_ROOT`、`APP_DATA_DIR` | 备课产物、资料库与应用数据目录 |
+| Agent | `CODEX_COMMAND`、`CODEX_MODEL`、`CODEX_AUTO_RUN` | 模型调用与自动运行策略 |
+| 任务控制 | `CODEX_STAGED_LESSON_PREP`、`CODEX_IDLE_TIMEOUT_MS`、`CODEX_IDLE_MAX_RETRIES` | 阶段化执行、超时与重试 |
+| RAG | `RAG_EMBEDDING_PROVIDER`、`RAG_VECTOR_WEIGHT`、`RAG_KEYWORD_WEIGHT` | Hybrid RAG 与召回权重 |
+| OCR | `PREP_OCR_ENABLED`、`PADDLE_OCR_API_URL`、`PADDLE_OCR_API_TOKEN` | 扫描材料与 AI 草稿解析 |
+| 飞书 | `FEISHU_SYNC_ENABLED`、`FEISHU_LESSON_PARENT_FOLDER_TOKEN` | 文档、文件、日程与消息同步 |
+| 安全 | `SECURE_COOKIES`、`ENABLE_HSTS`、`TRUST_PROXY` | HTTPS 与反向代理配置 |
 
-推荐 Linux 部署流程：
+不要把 API Token、私钥或真实 `.env` 提交到代码仓库。
+
+## 验证与部署
 
 ```bash
-cd /home/kunya/lesson-prep-web
+npm run check
+npm test
+npm run build
+npm run deploy:check
+```
+
+需要验证完整链路时可运行隔离冒烟测试。它使用临时工作区和 fake Codex，不写入真实备课数据：
+
+```bash
+npm run smoke
+```
+
+Linux 部署示例：
+
+```bash
 cp deploy/env.production.example .env
 npm ci
 npm run build
-npm run deploy:check
-npm start
-```
-
-确认能打开后，再把 `deploy/systemd/lesson-prep-web.service.example` 按服务器用户名和目录改好，复制到 `/etc/systemd/system/lesson-prep-web.service`，用 systemd 常驻运行。
-
-如果从本机打包上传服务器，可以先生成发布包：
-
-```powershell
-npm run build
-npm run package:release
-```
-
-生成的 zip 在 `release/` 目录里。发布包包含构建产物、源码、部署示例和两个项目内置 skill，但不会包含 `node_modules`、`.env`、应用数据库、日志或真实备课资料。上传到服务器后：
-
-```bash
-unzip lesson-prep-web-*.zip
-cd lesson-prep-web-0.1.0
-cp deploy/env.production.example .env
-nano .env
 bash scripts/server-setup.sh
 npm start
 ```
 
-如果你希望在服务器上也运行 `npm run smoke`，请用 `npm ci` 安装开发依赖；`smoke` 会使用临时 fake Codex，不会消耗真实 Codex 任务。
+生产环境建议使用仓库中的 systemd 与 Nginx 示例，并通过 `GET /api/health` 做健康检查：
 
-也可以让向导脚本顺手运行 smoke：
+- `deploy/systemd/lesson-prep-web.service.example`
+- `deploy/nginx/lesson-prep-web.conf.example`
 
-```bash
-bash scripts/server-setup.sh --smoke
-```
+## 数据、隐私与备份
 
-服务器上确认 Codex CLI 已安装并登录后，可以跑一次真实 Codex 烟测：
+- 学生、课程、任务与资料索引默认保存在自有环境，不依赖第三方 SaaS 数据库。
+- 账号设置支持下载应用数据备份，并提供工作区、资料库、Agent 配置与失败任务诊断。
+- 完整恢复需要同时备份 `PREP_WORKSPACE` 与 `APP_DATA_DIR`。
+- 公网部署时应启用 HTTPS、强密码和访问限制；飞书同步与外部 OCR/Embedding 服务应按实际数据合规要求启用。
 
-```bash
-npm run codex:smoke
-```
+## Roadmap
 
-这个命令会用临时工作区启动一套隔离服务，真实调用服务器上的 `codex exec`，验证后台任务是否能生成所需核心文件。它会消耗一次真实 Codex 调用，所以不要放进常规自动化里。
+- 建立真实备课样本评测集，补齐检索相关性、内容正确性和首次可用率指标。
+- 将教师的修改与重试行为沉淀为可分析的反馈数据，定位高频失败环节。
+- 增加来源引用与答案核对的可视化，提升内容审阅效率。
+- 在单教师闭环稳定后，再评估多人协作、权限与课程模板市场等扩展方向。
 
-生产长期运行仍建议使用 `deploy/systemd/lesson-prep-web.service.example`，不要长期依赖 SSH 终端里的 `npm start`。
+## 项目阶段
 
-健康检查地址：
+当前为可运行 MVP，重点验证的是：**Agent/RAG 能否被组织成教师可理解、可干预、可交付的完整产品流程。**
 
-```text
-GET /api/health
-```
-
-建议在服务器上设置环境变量：
-
-- `PREP_WORKSPACE`: 备课工作区根目录。
-- `PREP_MATERIAL_ROOT`: 资料库根目录，默认可设为 `${PREP_WORKSPACE}/资料库`。
-- `APP_DATA_DIR`: 应用数据库、日志和索引目录。
-- `CODEX_COMMAND`: Codex CLI 命令，默认 `codex`。
-- `CODEX_MODEL`: Codex 调用模型，默认 `gpt-5.6-sol`。
-- `CODEX_REASONING_EFFORT`: Codex 推理强度，默认 `high`。
-- `CODEX_AUTO_RUN`: 是否允许课程创建后自动调用 Codex，默认 `true`。
-- `CODEX_STAGED_LESSON_PREP`: 是否把正式备课拆成独立 Codex 阶段，默认 `true`。开启后会先做 OCR/题目提取；阶段 1 完成后，双 PDF 分支与 Markdown 交付物分支并行生成。逐字稿和知识点详解按统一题序生成，不等待 PDF 页码映射。
-- `CODEX_IDLE_TIMEOUT_MS`: Codex 连续无 stdout/stderr 输出多久后由 watchdog 终止，默认 `480000`（8 分钟）；设为 `0` 可关闭。
-- `CODEX_IDLE_MAX_RETRIES`: watchdog 超时后自动重试次数，默认 `1`。用户主动取消不会触发重试。
-- `CODEX_RUNNER`: `local` 或 `ssh`。网页部署在 Linux 服务器上时用 `local` 即可。
-- `CODEX_SSH_HOST` / `CODEX_SSH_USER` / `CODEX_SSH_PORT` / `CODEX_SSH_KEY`: `CODEX_RUNNER=ssh` 时用于远程调用 Linux 服务器上的 Codex。
-- `CODEX_REMOTE_WORKSPACE`: Linux 服务器上的备课工作区路径。SSH 模式下，prompt 里的工作区和输出目录会映射到这个路径。
-- `CODEX_REMOTE_PROJECT_ROOT`: Linux 服务器上的 `lesson-prep-web` 项目路径。SSH 模式下如果项目目录不在 `CODEX_REMOTE_WORKSPACE` 里面，需要设置它，Codex 才能读到项目内置 skill。
-- `PREP_OCR_ENABLED`: 是否启用 OCR 预处理，默认 `true`。
-- `PADDLE_OCR_API_URL` / `PADDLE_OCR_API_TOKEN` / `PADDLE_OCR_MODEL`: PaddleOCR API 配置。不要把 token 提交到代码仓库。OCR 会用于 AI 草稿 PDF 上传和正式备课前的本地资料预处理；资料类 PDF 会把 OCR 后的合并 Markdown 自动排队进入 RAG，而不是把原 PDF 直接交给 RAG 解析。
-- `PADDLE_OCR_POLL_INTERVAL_MS` / `PADDLE_OCR_TIMEOUT_MS` / `PADDLE_OCR_MAX_FILES`: OCR 轮询间隔、超时和单次任务最多处理文件数。
-- `MAX_UPLOAD_FILES`: 单次上传最多文件数，默认 `5000`。上传大文件夹提示文件太多时调大这个值。
-- `MAX_UPLOAD_FILE_MB`: 单个上传文件大小上限，默认 `500` MB。上传大 PDF/压缩包提示文件过大时调大这个值；Nginx 部署时还要同步调大 `client_max_body_size`。
-- `RAG_MAX_REINDEX_FILES`: 重建索引时最多扫描文件数，默认 `300`。
-- `RAG_MAX_PARSE_BYTES`: 单个资料允许解析正文的大小上限，默认可设 `209715200`（200 MB）。超过后只索引文件名和路径。
-- `RAG_EMBEDDING_PROVIDER`: 设为 `ark` 时启用混合 RAG 向量检索；未设置 API key 时自动退回关键词/FTS 检索。
-- `RAG_EMBEDDING_ENDPOINT` / `RAG_EMBEDDING_API_KEY` / `RAG_EMBEDDING_MODEL`: Ark embedding 接口配置。不要把 API key 提交到代码仓库。
-- `RAG_VECTOR_WEIGHT` / `RAG_KEYWORD_WEIGHT`: 混合检索中向量语义分和关键词分的权重，默认建议 `70` / `30`。
-- `RAG_BOOST_PATTERNS`: 重点资料加权，格式如 `2025新高考:45,690页:20`，命中标题或路径时额外加分。
-- `SECURE_COOKIES`: HTTPS 部署后建议设为 `true`；如果只是用 HTTP 初测，先保持 `false`。
-- `ENABLE_HSTS`: 确认 HTTPS 正常后再设为 `true`。
-- `TRUST_PROXY`: 通过 Nginx 反向代理部署时建议设为 `true`，登录限流会使用真实客户端 IP。
-- `AUTH_RATE_LIMIT_MAX` / `AUTH_RATE_LIMIT_WINDOW_MS`: 登录和初始化接口限流，默认 10 分钟 8 次。
-
-如果公网部署，请务必使用 HTTPS、强密码，并只开放给自己或可信网络。应用会给登录和初始化接口做基础限流，并在生产环境发送 CSP、X-Frame-Options、X-Content-Type-Options 等安全响应头。
-
-## 备份
-
-网页右下角/侧边栏的“账号设置”里有“下载数据备份”和“系统诊断”。
-
-备份文件是 zip，包含：
-
-- `app-db.json`: 应用数据库快照，包括学生、课程、任务、资料索引和账号密码哈希。
-- `manifest.json`: 备份时间、工作区路径和数据数量统计。
-
-生成的 `md` / `pdf` 课件、上传到资料库的原始文件仍保存在 `PREP_WORKSPACE` 里。服务器上线后建议同时备份整个 `PREP_WORKSPACE` 目录和 `APP_DATA_DIR`。
-
-系统诊断会检查 Codex CLI 或 SSH 运行配置、两个项目内置 skill、工作区路径、资料库路径、应用数据目录、资料索引数量和最近失败任务。
-
-## 飞书集成
-
-项目不再提供飞书机器人入口。备课任务仍然从网页创建和运行；任务完成后，服务端使用当前机器已经登录的官方 `lark-cli` 用户身份自动收尾：
-
-- 在固定父目录下按学生/课程创建子文件夹。
-- 将 `老师逐字稿.md`、`知识点详解.md`、`课后反馈.md` 导入为飞书新版文档。
-- 将 `课堂课件.pdf` 上传为云空间文件。
-- 如果课程时间有效，创建飞书日程，并把本地目录、飞书目录和核心文件结果写进日程描述。
-- 通过 `lark-cli im +messages-send --as user` 把同步结果发给 `FEISHU_NOTIFY_OPEN_ID`。
-
-服务器运行前先在同一用户下完成一次登录：
-
-```bash
-lark-cli auth login --recommend
-```
-
-服务器 `.env` 只需要保留同步配置：
-
-```bash
-FEISHU_LESSON_PARENT_FOLDER_TOKEN=LY9efBiWjlEAQWdqPrucuLl4nic
-FEISHU_NOTIFY_OPEN_ID=
-FEISHU_SYNC_ENABLED=true
-FEISHU_LESSON_CALENDAR_ENABLED=true
-FEISHU_LESSON_CALENDAR_ID=
-FEISHU_LESSON_CALENDAR_ATTENDEE_IDS=
-```
-
-备课产物默认会在 `FEISHU_LESSON_PARENT_FOLDER_TOKEN` 指定的父目录下按学生/课程创建子文件夹，然后把三个 Markdown 导入为飞书新版文档、把 PDF 上传为云空间文件。默认父目录是：
-
-```text
-https://my.feishu.cn/drive/folder/LY9efBiWjlEAQWdqPrucuLl4nic
-```
-
-所有飞书操作都使用当前 `lark-cli` 登录用户执行，不再注入 App ID / App Secret，不再使用 bot strict mode。可用 `FEISHU_SYNC_ENABLED=false` 关闭完成后同步；可用 `FEISHU_LESSON_CALENDAR_ENABLED=false` 只关闭日程创建。
+如果你关注的是 AI 产品设计，可以从“关键产品决策”和“质量与评测设计”开始阅读；如果你希望运行项目，可直接参考“快速开始”。
