@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
-import type { Course, Db, Job, LessonTemplate, Material, Student, User } from "./types.js";
+import type { Conversation, Course, Db, Job, LessonTemplate, Material, MemoryEntry, Student, User } from "./types.js";
 
 interface StoreOptions {
   persist?: boolean;
@@ -15,7 +15,9 @@ const emptyDb = (): Db => ({
   jobs: [],
   materials: [],
   ragChunks: [],
-  templates: []
+  templates: [],
+  memories: [],
+  conversations: []
 });
 
 export class Store {
@@ -38,6 +40,8 @@ export class Store {
     this.data.materials = mergeEntities(this.data.materials, loaded.materials);
     this.data.ragChunks = mergeEntities(this.data.ragChunks, loaded.ragChunks);
     this.data.templates = mergeEntities(this.data.templates, loaded.templates);
+    this.data.memories = mergeEntities(this.data.memories, loaded.memories);
+    this.data.conversations = mergeEntities(this.data.conversations, loaded.conversations);
   }
 
   save() {
@@ -74,6 +78,14 @@ export class Store {
     return this.data.jobs.find((job) => job.id === id);
   }
 
+  findMemory(id: string) {
+    return this.data.memories.find((memory) => memory.id === id);
+  }
+
+  findConversation(id: string) {
+    return this.data.conversations.find((conversation) => conversation.id === id);
+  }
+
   addUser(user: User) {
     this.data.users.push(user);
     this.save();
@@ -94,11 +106,23 @@ export class Store {
     this.save();
   }
 
+  addMemory(memory: MemoryEntry) {
+    this.data.memories.push(memory);
+    this.save();
+  }
+
+  addConversation(conversation: Conversation) {
+    this.data.conversations.push(conversation);
+    this.save();
+  }
+
   deleteCourse(courseId: string) {
     const course = this.findCourse(courseId);
     if (!course) return false;
     this.data.courses = this.data.courses.filter((item) => item.id !== courseId);
     this.data.jobs = this.data.jobs.filter((job) => job.courseId !== courseId);
+    this.data.memories = this.data.memories.filter((memory) => memory.courseId !== courseId);
+    this.data.conversations = this.data.conversations.filter((conversation) => conversation.courseId !== courseId);
     this.save();
     return true;
   }
@@ -110,6 +134,24 @@ export class Store {
     this.data.students = this.data.students.filter((item) => item.id !== studentId);
     this.data.courses = this.data.courses.filter((course) => course.studentId !== studentId);
     this.data.jobs = this.data.jobs.filter((job) => !courseIds.has(job.courseId));
+    this.data.memories = this.data.memories.filter((memory) => memory.studentId !== studentId && !(memory.courseId && courseIds.has(memory.courseId)));
+    this.data.conversations = this.data.conversations.filter((conversation) => conversation.studentId !== studentId && !(conversation.courseId && courseIds.has(conversation.courseId)));
+    this.save();
+    return true;
+  }
+
+  deleteMemory(memoryId: string) {
+    const memory = this.findMemory(memoryId);
+    if (!memory) return false;
+    this.data.memories = this.data.memories.filter((item) => item.id !== memoryId);
+    this.save();
+    return true;
+  }
+
+  deleteConversation(conversationId: string) {
+    const conversation = this.findConversation(conversationId);
+    if (!conversation) return false;
+    this.data.conversations = this.data.conversations.filter((item) => item.id !== conversationId);
     this.save();
     return true;
   }

@@ -16,6 +16,7 @@ import {
   recoverCourseOutputDir
 } from "./courseOutput.js";
 import { formatOcrResultForPrompt, preprocessFilesWithOcr } from "./ocr.js";
+import { buildMemoryPromptSection } from "./memory.js";
 import { buildRagPlan, type RagPlan } from "./rag.js";
 import type { Course, CoursePostClassSummary, Job, JobArtifactSnapshot, Student } from "./types.js";
 import type { Store } from "./store.js";
@@ -634,7 +635,7 @@ function formatRagResult(result: RagPlan["selected"][number], index: number) {
   ].join("\n");
 }
 
-function formatConfirmedAiDraft(student: Student, course: Course) {
+function formatConfirmedAiDraft(student: Student, course: Course, memoryPromptSection?: string) {
   return `
 用户确认后的 AI 草稿（这是本次调用 Codex 的主依据，已包含用户手动修改后的字段）：
 - 学生姓名：${student.name || "[待确认]"}
@@ -659,6 +660,9 @@ function formatConfirmedAiDraft(student: Student, course: Course) {
 
 AI 整理的备课执行要求 / 原始沟通材料（辅助依据，不能覆盖上面用户确认后的结构化字段）：
 ${course.notes || "[无]"}
+
+系统记忆管理条目（长期保留，教师可人工增删改/停用；本段落是经筛选后写入 Prompt 的有效记忆）：
+${memoryPromptSection || "暂无额外记忆条目。"}
 
 数量与范围优先级：用户在课程主题、资料说明或补充要求中明确指定的题目数量、每类题型数量、资料覆盖范围和顺序是硬约束，优先于课长、历史学习建议、AI 草稿中的筛选建议和教学节奏判断。一份 PDF 或整套资料可以跨多次课讲完；必须先完整产出用户要求的题目集合，再另行给出分课建议，不能用课时长度删题。
 `.trim();
@@ -725,6 +729,7 @@ export async function buildCodexPrompt(store: Store, student: Student, course: C
    - 几何/函数/统计图必须准确、足够大、标签不重叠。编译后检查两个 PDF 均非空、可打开、A4 尺寸合理，并用缩略 contact sheet 做整体视觉检查。`
       : `23. ${classroomPdfName} 的形态必须遵守所选 skill 的课堂 PDF 规则，使用 A4 竖版讲义模板，保留学生可见内容、必要图形和书写空间，并完成编译与缩略视觉检查。`;
   const continuityContext = buildStudentContinuityContext(store, student, course);
+  const memoryPromptSection = buildMemoryPromptSection(store, student, course);
   const skipFullRag = isLightweightRefineInstruction(options.refineInstruction);
   const ragContext = await buildRagContext(store, course, skipFullRag);
 
@@ -806,7 +811,7 @@ ${formalPdfRules}
    - 向量命令优先写成带花括号形式，例如 \\vec{a}、\\vec{b}
 25. 只负责生成上面列出的本地核心产物；不要在备课生成任务内部调用 lark-cli。任务完成后，宿主服务会用当前机器已登录的 lark-cli user 身份统一完成飞书上传、日程创建和消息通知。
 
-${formatConfirmedAiDraft(student, course)}
+${formatConfirmedAiDraft(student, course, memoryPromptSection)}
 
 OCR 预处理结果（若有）：
 ${options.ocrContext || "[无。若 PDF 是扫描件，优先运行 PaddleOCR 后读取 OCR Markdown；不要为了识别整份扫描件而逐页调用视觉模型。]"}
@@ -894,7 +899,7 @@ ${course.type === "formal" ? `- 教师授课一体版 PDF 文件名：${teaching
 `.trim();
 }
 
-function buildStageOnePrompt(student: Student, course: Course, continuityContext: string, ragContext: string, ocrContext: string) {
+function buildStageOnePrompt(student: Student, course: Course, continuityContext: string, ragContext: string, ocrContext: string, memoryPromptSection?: string) {
   return `
 ${stageCommonHeader(student, course)}
 
@@ -923,7 +928,7 @@ ${stageCommonHeader(student, course)}
 7. 正式课在阶段1同时确定课后作业题序。用户未指定作业数量时固定选4题；题目必须由本节最新内容、OCR/本地资料和课堂核心题型改编或迁移，不得与课堂原题完全相同。把4题完整题面、选题意图、答案、条件与边界核验写入 _work/答案核对表.md，并在 _work/课件生成计划.md 单列“课后作业与答案版”。
 
 用户确认后的 AI 草稿：
-${formatConfirmedAiDraft(student, course)}
+${formatConfirmedAiDraft(student, course, memoryPromptSection)}
 
 同一学生连续学习上下文：
 ${continuityContext}
@@ -1139,11 +1144,12 @@ async function runStagedCodexJob(
 
   const ocrContext = await prepareCourseOcrContext(course, append);
   const continuityContext = buildStudentContinuityContext(store, student, course);
+  const memoryPromptSection = buildMemoryPromptSection(store, student, course);
   const ragContext = await buildRagContext(store, course, false);
   const foundationCode = await runCodexStage(
     job,
     "stage-1-foundation",
-    buildStageOnePrompt(student, course, continuityContext, ragContext, ocrContext),
+    buildStageOnePrompt(student, course, continuityContext, ragContext, ocrContext, memoryPromptSection),
     append,
     extraEnv
   );

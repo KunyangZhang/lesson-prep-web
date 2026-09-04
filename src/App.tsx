@@ -49,6 +49,7 @@ import { OutputReview } from "./features/courses/OutputReview";
 import { MaterialsLibraryHeader } from "./features/materials/MaterialsLibrary";
 import { SearchResults } from "./features/materials/SearchResults";
 import { TemplateManager } from "./features/templates/TemplateManager";
+import { MemoryManagerPanel, ConversationStatePanel } from "./features/memory/MemoryPanel";
 import type {
   Course,
   CourseFile,
@@ -1264,6 +1265,28 @@ function StudentWorkspace({
                 <ChevronRight size={16} />
               </summary>
               <StudentProfilePanel student={student} onSaved={onStudentSaved} onError={onError} />
+            </details>
+
+            <details className="profile-disclosure">
+              <summary>
+                <span>
+                  <BookOpen size={16} />
+                  记忆管理
+                </span>
+                <ChevronRight size={16} />
+              </summary>
+              <MemoryManagerPanel student={student} />
+            </details>
+
+            <details className="profile-disclosure">
+              <summary>
+                <span>
+                  <ClipboardCheck size={16} />
+                  多轮状态控制
+                </span>
+                <ChevronRight size={16} />
+              </summary>
+              <ConversationStatePanel student={student} />
             </details>
 
             <CourseQueue

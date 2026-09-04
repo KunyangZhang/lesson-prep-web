@@ -6,7 +6,7 @@ import type { Course, Db, Job, Material, Student } from "./types.js";
 const now = new Date("2026-09-04T08:00:00.000Z");
 
 function emptyDb(): Db {
-  return { users: [], students: [], courses: [], jobs: [], materials: [], ragChunks: [], templates: [] };
+  return { users: [], students: [], courses: [], jobs: [], materials: [], ragChunks: [], templates: [], memories: [], conversations: [] };
 }
 
 function student(id: string, name: string, updatedAt = "2026-09-04T07:00:00.000Z"): Student {

@@ -53,7 +53,9 @@ test("learning insights calculate rates, trends and recurring weak points", () =
     jobs: [baseJob("job-1", "course-1", 90), baseJob("job-2", "course-1", 70, "补充变式题")],
     materials: [],
     ragChunks: [],
-    templates: []
+    templates: [],
+    memories: [],
+    conversations: []
   };
 
   const insights = buildLearningInsights(data, new Date("2026-09-04T12:00:00.000Z"));
@@ -69,7 +71,7 @@ test("learning insights calculate rates, trends and recurring weak points", () =
 });
 
 test("learning insights are zero-safe", () => {
-  const data: Db = { users: [], students: [], courses: [], jobs: [], materials: [], ragChunks: [], templates: [] };
+  const data: Db = { users: [], students: [], courses: [], jobs: [], materials: [], ragChunks: [], templates: [], memories: [], conversations: [] };
   const insights = buildLearningInsights(data, new Date("2026-09-04T12:00:00.000Z"));
   assert.equal(insights.summary.completionRate, 0);
   assert.equal(insights.summary.averageQualityScore, null);

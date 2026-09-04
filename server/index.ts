@@ -59,6 +59,21 @@ import {
   updateLessonTemplate
 } from "./templates.js";
 import {
+  buildMemoryPromptSection,
+  createMemory,
+  listMemories,
+  updateMemory
+} from "./memory.js";
+import {
+  appendTurn,
+  completeConversation,
+  createConversation,
+  listConversations,
+  recordConversationTurn,
+  resetConversation,
+  updateConversation
+} from "./conversations.js";
+import {
   fitFilenameComponent,
   Store,
   newId,
@@ -1237,9 +1252,15 @@ function mergeAiLessonDraft(input: string, ai: Record<string, unknown>) {
 
 async function createLessonDraft(
   input: string,
-  attachmentContext: AiDraftAttachmentContext = { text: "", images: [], summary: { fileCount: 0, imageCount: 0, items: [] } }
+  attachmentContext: AiDraftAttachmentContext = { text: "", images: [], summary: { fileCount: 0, imageCount: 0, items: [] } },
+  memoryContext?: string
 ) {
-  const modelInput = `${input}${attachmentContext.text}`;
+  const modelInput = memoryContext
+    ? `${input}${attachmentContext.text}
+
+记忆管理条目（长期保留，教师可人工增删改/停用；供结构化草稿参考，不要编造事实）：
+${memoryContext}`
+    : `${input}${attachmentContext.text}`;
   if (config.lessonDraftAiProvider.toLowerCase() === "codex") {
     return runCodexLessonDraft(modelInput);
   }
@@ -1833,6 +1854,149 @@ app.delete("/api/students/:studentId", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/api/memories", requireAuth, (req, res) => {
+  const studentId = requiredString(req.query.studentId);
+  const courseId = requiredString(req.query.courseId);
+  if (studentId && !store.findStudent(studentId)) {
+    res.status(404).json({ error: "Student not found." });
+    return;
+  }
+  if (courseId && !store.findCourse(courseId)) {
+    res.status(404).json({ error: "Course not found." });
+    return;
+  }
+  const memories = listMemories(store, {
+    studentId,
+    courseId,
+    kind: requiredString(req.query.kind),
+    q: requiredString(req.query.q),
+    active: typeof req.query.active === "string" ? req.query.active : undefined
+  });
+  res.json({ memories });
+});
+
+app.post("/api/memories", requireAuth, (req, res) => {
+  try {
+    const memories = listMemories(store, {});
+    const memory = createMemory(store, req.body as Record<string, unknown>);
+    res.json({ memory, count: memories.length + 1 });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.patch("/api/memories/:memoryId", requireAuth, (req, res) => {
+  const memory = updateMemory(store, routeParam(req, "memoryId"), req.body as Record<string, unknown>);
+  if (!memory) {
+    res.status(404).json({ error: "Memory not found." });
+    return;
+  }
+  res.json({ memory });
+});
+
+app.delete("/api/memories/:memoryId", requireAuth, (req, res) => {
+  const deleted = store.deleteMemory(routeParam(req, "memoryId"));
+  if (!deleted) {
+    res.status(404).json({ error: "Memory not found." });
+    return;
+  }
+  res.json({ deleted: true });
+});
+
+app.get("/api/conversations", requireAuth, (req, res) => {
+  const studentId = requiredString(req.query.studentId);
+  const courseId = requiredString(req.query.courseId);
+  if (studentId && !store.findStudent(studentId)) {
+    res.status(404).json({ error: "Student not found." });
+    return;
+  }
+  if (courseId && !store.findCourse(courseId)) {
+    res.status(404).json({ error: "Course not found." });
+    return;
+  }
+  const conversations = listConversations(store, {
+    studentId,
+    courseId,
+    status: requiredString(req.query.status)
+  });
+  res.json({ conversations });
+});
+
+app.post("/api/conversations", requireAuth, (req, res) => {
+  try {
+    const conversation = createConversation(store, req.body as Record<string, unknown>);
+    res.json({ conversation });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get("/api/conversations/:conversationId", requireAuth, (req, res) => {
+  const conversation = store.findConversation(routeParam(req, "conversationId"));
+  if (!conversation) {
+    res.status(404).json({ error: "Conversation not found." });
+    return;
+  }
+  res.json({ conversation });
+});
+
+app.patch("/api/conversations/:conversationId", requireAuth, (req, res) => {
+  const conversation = updateConversation(store, routeParam(req, "conversationId"), req.body as Record<string, unknown>);
+  if (!conversation) {
+    res.status(404).json({ error: "Conversation not found." });
+    return;
+  }
+  res.json({ conversation });
+});
+
+app.post("/api/conversations/:conversationId/turns", requireAuth, (req, res) => {
+  const content = requiredString(req.body.content);
+  if (!content) {
+    res.status(400).json({ error: "消息内容不能为空。" });
+    return;
+  }
+  const role = req.body.role === "assistant" ? "assistant" : req.body.role === "system" ? "system" : "user";
+  const conversation = appendTurn(
+    store,
+    routeParam(req, "conversationId"),
+    role,
+    content,
+    req.body.context && typeof req.body.context === "object" ? (req.body.context as Record<string, unknown>) : undefined
+  );
+  if (!conversation) {
+    res.status(404).json({ error: "Conversation not found." });
+    return;
+  }
+  res.json({ conversation });
+});
+
+app.post("/api/conversations/:conversationId/reset", requireAuth, (req, res) => {
+  const conversation = resetConversation(store, routeParam(req, "conversationId"));
+  if (!conversation) {
+    res.status(404).json({ error: "Conversation not found." });
+    return;
+  }
+  res.json({ conversation });
+});
+
+app.post("/api/conversations/:conversationId/complete", requireAuth, (req, res) => {
+  const conversation = completeConversation(store, routeParam(req, "conversationId"));
+  if (!conversation) {
+    res.status(404).json({ error: "Conversation not found." });
+    return;
+  }
+  res.json({ conversation });
+});
+
+app.delete("/api/conversations/:conversationId", requireAuth, (req, res) => {
+  const deleted = store.deleteConversation(routeParam(req, "conversationId"));
+  if (!deleted) {
+    res.status(404).json({ error: "Conversation not found." });
+    return;
+  }
+  res.json({ deleted: true });
+});
+
 app.post(
   "/api/ai-drafts/lesson",
   requireAuth,
@@ -1862,9 +2026,40 @@ app.post(
       `[ai-draft] files=${attachmentContext.summary.fileCount} images=${attachmentContext.summary.imageCount} ` +
         attachmentContext.summary.items.map((item) => `${item.status}:${item.name}:${item.savedPath || ""}:${item.message}`).join(" | ")
     );
-    const draft = await createLessonDraft(input || "请根据上传文件生成备课草稿。", attachmentContext);
+    const memoryContext = existingStudent ? buildMemoryPromptSection(store, existingStudent) : undefined;
+    const draft = await createLessonDraft(input || "请根据上传文件生成备课草稿。", attachmentContext, memoryContext);
     const { student, course } = draftResponse(draft, savedPaths);
-    res.json({ draft: { student, course }, attachments: attachmentContext.summary });
+    let conversation = null;
+    if (existingStudent) {
+      const userContent = [
+        input || "请根据上传文件生成备课草稿。",
+        attachmentContext.summary.fileCount > 0
+          ? `上传附件：${attachmentContext.summary.items.map((item) => `${item.name}（${item.status}）`).join("、")}`
+          : ""
+      ]
+        .filter(Boolean)
+        .join("\n");
+      const assistantContent = [
+        `已生成 AI 备课草稿：${course.desiredContent || "[未命名]"}`,
+        `学生：${student.name || "[待确认]"} · ${student.stage || "学段未确认"}`,
+        `课型：${course.type === "trial" ? "试听课" : "正式课"} · ${course.durationMinutes || 90} 分钟`,
+        course.notes ? `备课摘要：${course.notes.slice(0, 500)}` : ""
+      ]
+        .filter(Boolean)
+        .join("\n");
+      recordConversationTurn(store, existingStudent.id, {
+        title: `AI 草稿：${(course.desiredContent || input).slice(0, 32)}`,
+        role: "user",
+        content: userContent,
+        context: { step: "user_request" }
+      });
+      conversation = recordConversationTurn(store, existingStudent.id, {
+        role: "assistant",
+        content: assistantContent,
+        context: { step: "draft_generated", lastDraftSummary: assistantContent }
+      });
+    }
+    res.json({ draft: { student, course }, attachments: attachmentContext.summary, conversation });
   })
 );
 
@@ -1877,12 +2072,23 @@ app.post(
       res.status(400).json({ error: "缺少可继续的草稿日志路径。" });
       return;
     }
+    const studentId = requiredString(req.body.studentId);
     const draft = continueCodexLessonDraft(logPath);
     const { student, course } = draftResponse(draft);
+    let conversation = null;
+    if (studentId && store.findStudent(studentId)) {
+      const summary = `继续生成 AI 备课草稿：${course.desiredContent || "[未命名]"}；学生：${student.name || "[待确认]"}；课型：${course.type === "trial" ? "试听课" : "正式课"}。`;
+      conversation = recordConversationTurn(store, studentId, {
+        role: "assistant",
+        content: summary,
+        context: { step: "draft_generated", lastDraftSummary: summary, draftLogPath: logPath }
+      });
+    }
     res.json({
       draft: { student, course },
       attachments: { fileCount: 0, imageCount: 0, items: [] },
-      continuedFrom: logPath
+      continuedFrom: logPath,
+      conversation
     });
   })
 );

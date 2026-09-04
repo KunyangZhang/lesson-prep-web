@@ -57,7 +57,7 @@ function fixture(): Db {
     createdAt: now,
     startedAt: now
   };
-  return { users: [], students: [student], courses: [course], jobs: [job], materials: [], ragChunks: [], templates: [] };
+  return { users: [], students: [student], courses: [course], jobs: [job], materials: [], ragChunks: [], templates: [], memories: [], conversations: [] };
 }
 
 function validPostClassFeedback() {

@@ -5028,3 +5028,251 @@ textarea:focus {
     grid-column: 1 / -1;
   }
 }
+
+/* Memory management and multi-turn state control */
+.memory-form {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(120px, 0.7fr) minmax(140px, 1fr);
+  gap: 10px;
+  margin: 10px 0 14px;
+}
+
+.memory-form .memory-form-content {
+  grid-column: 1 / -1;
+}
+
+.memory-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.memory-form input,
+.memory-form select,
+.memory-form textarea,
+.memory-list-toolbar input,
+.memory-edit-form input,
+.memory-edit-form textarea,
+.conversation-toolbar select,
+.conversation-compose textarea {
+  width: 100%;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.memory-form input:focus,
+.memory-form select:focus,
+.memory-form textarea:focus,
+.memory-list-toolbar input:focus,
+.memory-edit-form input:focus,
+.memory-edit-form textarea:focus,
+.conversation-toolbar select:focus,
+.conversation-compose textarea:focus {
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 1px;
+}
+
+.memory-list-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.memory-list-toolbar small {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.memory-list {
+  display: grid;
+  gap: 8px;
+}
+
+.memory-item {
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fff;
+  display: grid;
+  gap: 6px;
+}
+
+.memory-item-inactive {
+  opacity: 0.55;
+}
+
+.memory-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.memory-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.memory-kind,
+.memory-scope,
+.memory-pin,
+.memory-source {
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.memory-kind {
+  color: #6b4ba3;
+  background: #f0e9fa;
+}
+
+.memory-kind-learning {
+  color: #1c6b3c;
+  background: #e8f7ec;
+}
+
+.memory-kind-preference {
+  color: #2458a8;
+  background: #e8f0fc;
+}
+
+.memory-kind-insight {
+  color: #a05a20;
+  background: #fdf0e4;
+}
+
+.memory-kind-requirement {
+  color: #a03a3a;
+  background: #fcecec;
+}
+
+.memory-scope {
+  color: #4a5a68;
+  background: #eef1f4;
+}
+
+.memory-pin {
+  color: #8a6a00;
+  background: #fff4cf;
+}
+
+.memory-source {
+  color: #6a6f76;
+  background: #f4f5f7;
+}
+
+.memory-item p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.memory-tags {
+  color: var(--muted);
+}
+
+.memory-edit-form {
+  display: grid;
+  gap: 8px;
+}
+
+.memory-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.danger-button {
+  color: #b42318;
+  border-color: #f4c7c2;
+}
+
+.conversation-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.conversation-toolbar select {
+  flex: 1 1 200px;
+}
+
+.conversation-state {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #f3f6f9;
+  font-size: 12px;
+}
+
+.conversation-state strong {
+  color: var(--accent);
+}
+
+.conversation-turns {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.conversation-turn {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.conversation-turn-user {
+  border-left: 3px solid #2458b8;
+}
+
+.conversation-turn-assistant {
+  border-left: 3px solid #7c3aed;
+}
+
+.conversation-turn-system {
+  border-left: 3px solid #64748b;
+}
+
+.conversation-role {
+  display: inline-block;
+  margin-bottom: 3px;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--muted);
+}
+
+.conversation-turn p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.conversation-turn small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.conversation-compose {
+  display: grid;
+  gap: 8px;
+}

@@ -170,6 +170,61 @@ export interface RagChunk {
   tokens: string[];
 }
 
+export type MemoryScope = "student" | "global" | "course";
+export type MemoryKind = "learning" | "preference" | "insight" | "requirement" | "note";
+export type MemorySource = "manual" | "ai-draft" | "post-class" | "lesson-job" | "system";
+
+export interface MemoryEntry {
+  id: string;
+  scope: MemoryScope;
+  studentId?: string;
+  courseId?: string;
+  kind: MemoryKind;
+  title: string;
+  content: string;
+  tags: string[];
+  source: MemorySource;
+  pinned?: boolean;
+  active?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ConversationRole = "user" | "assistant" | "system";
+export type ConversationStatus = "active" | "completed" | "canceled" | "archived";
+
+export interface ConversationTurn {
+  id: string;
+  role: ConversationRole;
+  content: string;
+  state?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ConversationContext {
+  step: string;
+  lastUserInstruction?: string;
+  lastDraftSummary?: string;
+  draftLogPath?: string;
+  courseId?: string;
+  jobId?: string;
+  lastQualityStatus?: string;
+  [key: string]: unknown;
+}
+
+export interface Conversation {
+  id: string;
+  studentId?: string;
+  courseId?: string;
+  title: string;
+  status: ConversationStatus;
+  context: ConversationContext;
+  turns: ConversationTurn[];
+  createdAt: string;
+  updatedAt: string;
+  lastMessageAt?: string;
+}
+
 export interface Db {
   users: User[];
   students: Student[];
@@ -178,6 +233,8 @@ export interface Db {
   materials: Material[];
   ragChunks: RagChunk[];
   templates: LessonTemplate[];
+  memories: MemoryEntry[];
+  conversations: Conversation[];
 }
 
 export interface CourseFile {
