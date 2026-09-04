@@ -544,6 +544,7 @@ function codexMaterialReview(filePath: string, markdown: string) {
   ].join("\n");
   const args = [
     "exec",
+    "--skip-git-repo-check",
     "-C",
     config.workspaceRoot,
     "--sandbox",
@@ -962,7 +963,7 @@ function runCodexLessonDraftPrompt(prompt: string, mergeInput: string, logPrefix
   const logId = `${logPrefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const logPath = path.join(logsDir, `${logId}.log`);
   const lastMessagePath = path.join(tempUploadDir, `${logId}.last.md`);
-  const args = ["exec", "-C", config.workspaceRoot, "--sandbox", "danger-full-access", "--output-last-message", lastMessagePath];
+  const args = ["exec", "--skip-git-repo-check", "-C", config.workspaceRoot, "--sandbox", "danger-full-access", "--output-last-message", lastMessagePath];
   if (config.codexModel) args.push("--model", config.codexModel);
   if (config.codexReasoningEffort) args.push("-c", `model_reasoning_effort="${config.codexReasoningEffort}"`);
   args.push("-");

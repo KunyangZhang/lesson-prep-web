@@ -53,7 +53,7 @@ export const config = {
   dataDir: resolveFromProject(projectRoot, process.env.APP_DATA_DIR || "data"),
   port: Number(process.env.PORT || 4178),
   codexCommand: process.env.CODEX_COMMAND || "codex",
-  codexModel: process.env.CODEX_MODEL || "gpt-5.6-sol",
+  codexModel: process.env.CODEX_MODEL || "deepseek-v4-pro",
   codexReasoningEffort: optionalString(process.env.CODEX_REASONING_EFFORT, "high"),
   codexAutoRun: (process.env.CODEX_AUTO_RUN || "true").toLowerCase() !== "false",
   codexStagedLessonPrep: optionalBoolean(process.env.CODEX_STAGED_LESSON_PREP, true),
