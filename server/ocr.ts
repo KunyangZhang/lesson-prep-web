@@ -527,6 +527,53 @@ export function formatOcrResultForPrompt(result: OcrFileResult, maxChars = 12000
   return excerpt ? `${lines.join("\n")}\n\nOCR 摘录：\n${excerpt}` : lines.join("\n");
 }
 
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  const workerCount = Math.min(Math.max(1, Math.floor(limit)), items.length);
+  let nextIndex = 0;
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const index = nextIndex++;
+        if (index >= items.length) return;
+        results[index] = await worker(items[index], index);
+      }
+    })
+  );
+
+  return results;
+}
+
+export async function runPaddleOcrForFiles(
+  filePaths: string[],
+  outputDirForFile: (filePath: string) => string,
+  log?: (message: string) => void
+): Promise<OcrFileResult[]> {
+  const uniquePaths = [...new Set(filePaths.map((item) => item.trim()).filter(Boolean))];
+  if (uniquePaths.length === 0) return [];
+
+  const concurrency = Math.max(1, Math.floor(config.paddleOcrConcurrency));
+  log?.(`[ocr] queue ${uniquePaths.length} file(s), concurrency=${concurrency}`);
+
+  return mapWithConcurrency(uniquePaths, concurrency, async (filePath): Promise<OcrFileResult> => {
+    let outputDir = "";
+    try {
+      outputDir = outputDirForFile(filePath);
+      const fileLabel = path.basename(filePath);
+      const fileLog = log ? (message: string) => log(`[${fileLabel}] ${message}`) : undefined;
+      return await runPaddleOcrForFile(filePath, outputDir, fileLog);
+    } catch (error) {
+      return { status: "failed" as const, filePath, outputDir, message: errorDetail(error) };
+    }
+  });
+}
+
 export async function preprocessFilesWithOcr(
   filePaths: string[],
   ocrRoot: string,
@@ -534,10 +581,6 @@ export async function preprocessFilesWithOcr(
 ) {
   const uniquePaths = [...new Set(filePaths.map((item) => item.trim()).filter(Boolean))].filter(isOcrCandidate);
   const limited = uniquePaths.slice(0, Math.max(0, config.paddleOcrMaxFiles));
-  const results: OcrFileResult[] = [];
-  for (const filePath of limited) {
-    const outputDir = defaultOcrOutputDir(ocrRoot, filePath);
-    results.push(await runPaddleOcrForFile(filePath, outputDir, log));
-  }
-  return results;
+  if (limited.length === 0) return [];
+  return runPaddleOcrForFiles(limited, (filePath) => defaultOcrOutputDir(ocrRoot, filePath), log);
 }

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { config } from "./config.js";
 import { listCourseFiles } from "./files.js";
 import { nowIso } from "./store.js";
 import {
@@ -36,17 +37,25 @@ function overallStatus(items: QualityCheckItem[]): QualityStatus {
 
 export function assessCourseQuality(course: Course, studentName?: string): GenerationQuality {
   const checks: QualityCheckItem[] = [];
-  const requiredFiles = [
-    { name: "老师逐字稿.md", minSize: 100 },
-    { name: "知识点详解.md", minSize: 100 },
-    { name: courseClassroomPdfFileName(course, studentName), minSize: 200 },
-  ];
-  if (course.type === "formal") {
-    requiredFiles.push({ name: courseTeachingPdfFileName(course, studentName), minSize: 200 });
-    requiredFiles.push({ name: homeworkPdfFileName, minSize: 200 });
-    requiredFiles.push({ name: homeworkAnswerPdfFileName, minSize: 200 });
+  const twoPdfMode = course.type === "formal" && config.lessonPrepMode === "two-pdf";
+  const requiredFiles: Array<{ name: string; minSize: number }> = twoPdfMode
+    ? [
+        { name: courseClassroomPdfFileName(course, studentName), minSize: 200 },
+        { name: courseTeachingPdfFileName(course, studentName), minSize: 200 }
+      ]
+    : [
+        { name: "老师逐字稿.md", minSize: 100 },
+        { name: "知识点详解.md", minSize: 100 },
+        { name: courseClassroomPdfFileName(course, studentName), minSize: 200 }
+      ];
+  if (!twoPdfMode) {
+    if (course.type === "formal") {
+      requiredFiles.push({ name: courseTeachingPdfFileName(course, studentName), minSize: 200 });
+      requiredFiles.push({ name: homeworkPdfFileName, minSize: 200 });
+      requiredFiles.push({ name: homeworkAnswerPdfFileName, minSize: 200 });
+    }
+    requiredFiles.push({ name: "课后反馈.md", minSize: 80 });
   }
-  requiredFiles.push({ name: "课后反馈.md", minSize: 80 });
   let files: CourseFile[] = [];
   try {
     files = listCourseFiles(course.outputDir);
@@ -84,6 +93,7 @@ export function assessCourseQuality(course: Course, studentName?: string): Gener
     }
   }
 
+  if (!twoPdfMode) {
   const feedbackFile = byName.get("课后反馈.md");
   if (feedbackFile && feedbackFile.size >= 80) {
     const feedback = fs.readFileSync(feedbackFile.path, "utf8");
@@ -155,6 +165,7 @@ export function assessCourseQuality(course: Course, studentName?: string): Gener
     } else {
       checks.push(item(`work-${workFile.label}`, workFile.label, "pass", "中间文件存在。", file.path));
     }
+  }
   }
 
   const score = scoreItems(checks);

@@ -57,7 +57,14 @@ export function courseTeachingPdfFileName(course: Course, studentName?: string) 
   return fitFilenameComponent(classroomStem, "_授课一体版.pdf");
 }
 
+function isTwoPdfFormalMode(course: Course) {
+  return course.type === "formal" && config.lessonPrepMode === "two-pdf";
+}
+
 export function coreOutputFileNames(course: Course, studentName?: string) {
+  if (isTwoPdfFormalMode(course)) {
+    return [courseClassroomPdfFileName(course, studentName), courseTeachingPdfFileName(course, studentName)];
+  }
   const outputs = ["老师逐字稿.md", "知识点详解.md", courseClassroomPdfFileName(course, studentName)];
   if (course.type === "formal") {
     outputs.push(courseTeachingPdfFileName(course, studentName), homeworkPdfFileName, homeworkAnswerPdfFileName);
@@ -68,6 +75,12 @@ export function coreOutputFileNames(course: Course, studentName?: string) {
 
 function coreOutputSlots(course: Course, studentName?: string) {
   const pdfName = courseClassroomPdfFileName(course, studentName);
+  if (isTwoPdfFormalMode(course)) {
+    return [
+      { name: pdfName, aliases: pdfName === legacyClassroomPdfFileName ? [] : [legacyClassroomPdfFileName] },
+      { name: courseTeachingPdfFileName(course, studentName), aliases: ["授课一体版.pdf"] }
+    ];
+  }
   const slots: Array<{ name: string; aliases: string[] }> = [
     { name: "老师逐字稿.md", aliases: [] },
     { name: "知识点详解.md", aliases: [] },

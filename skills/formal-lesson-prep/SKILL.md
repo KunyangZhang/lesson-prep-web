@@ -5,6 +5,21 @@ description: Prepare systematic one-on-one junior-high or high-school math forma
 
 # Formal Lesson Prep
 
+## Host Simplified Two-PDF Mode (Default)
+
+本机默认运行 `LESSON_PREP_MODE=two-pdf` 的两 PDF 精简模式。本模式下的规则覆盖下文所有冲突内容：
+
+- 禁止使用子 Agent、`spawn_agent`、`followup_task`、`wait_agent`；所有工作由单 Agent 完成。
+- 禁止上网搜索真题、模拟题或试卷；真题/例题只能来自课程资料、OCR Markdown、用户本地文件和宿主提供的本地 RAG 候选。
+- 不需要独立核对答案；只根据资料选题。资料已有答案/解析就直接使用；资料没有答案时必须自己补一份完整答案/解析放入教师版，不能留空或标注 `[资料未提供答案]`，也不能因为资料没答案就跳过题目。不要为了找答案额外上网搜索或引入新资料。
+- 选题时优先典型题：每类题型选最能代表该题型核心方法、识别信号和常见变式的题，优先讲义原题和本地资料例题，不选偏题、怪题或冷门特例。
+- 只产出两份 A4 竖版 PDF：学生课堂讲义和教师授课一体版；不生成 `老师逐字稿.md`、`知识点详解.md`、`课后反馈.md`、任何页码映射、题目索引、候选题池、答案核对表、课程骨架、课件生成计划、丰富清单、课后作业 PDF 或课后作业参考答案 PDF。
+- 如确有作业，只放在教师授课一体版 PDF 的最后一节；学生版不出现答案。
+- 飞书上传、日程和通知由宿主服务在任务成功后统一处理，不要调用 `lark-cli`。
+- 不要过度交付任何未被用户要求的内容。
+- 每次任务都按全新两 PDF 交付处理；忽略并覆盖上一次取消任务留下的 `_work/课堂讲义.pdf`、`_work/授课一体版.pdf`、根目录旧 PDF 和旧 TeX，不复用旧题序或旧排版。
+
+
 ## Core Rule
 
 Prepare a systematic formal math lesson for long-term score improvement. Use Chinese unless the user asks otherwise. If information is missing, still create a usable draft with `[待确认]` placeholders and a short `课前需确认` section.

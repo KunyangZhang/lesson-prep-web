@@ -90,7 +90,13 @@ function checkOcr() {
   if (!config.paddleOcrApiToken) {
     return item("ocr", "OCR", "warn", "PaddleOCR API token 未配置，扫描 PDF 会退回旧处理方式。", "请设置 PADDLE_OCR_API_TOKEN。");
   }
-  return item("ocr", "OCR", "ok", `PaddleOCR API 已配置：${config.paddleOcrModel}`, config.paddleOcrApiUrl);
+  return item(
+    "ocr",
+    "OCR",
+    "ok",
+    `PaddleOCR API 已配置：${config.paddleOcrModel}；并发 ${config.paddleOcrConcurrency}，最多 ${config.paddleOcrMaxFiles} 个文件`,
+    config.paddleOcrApiUrl
+  );
 }
 
 function recentFailedJob(store: Store) {

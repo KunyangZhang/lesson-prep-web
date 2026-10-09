@@ -33,7 +33,7 @@ import {
   runCodexJob
 } from "./jobs.js";
 import { assessCourseQuality } from "./quality.js";
-import { readOcrMarkdown, runPaddleOcrForFile, sharedOcrOutputDir, type OcrFileResult } from "./ocr.js";
+import { readOcrMarkdown, runPaddleOcrForFile, runPaddleOcrForFiles, sharedOcrOutputDir, type OcrFileResult } from "./ocr.js";
 import {
   clearRagIndexCache,
   checkpointRagIndex,
@@ -652,14 +652,21 @@ async function buildAiDraftAttachmentContext(files: Express.Multer.File[]): Prom
   const items: AiDraftAttachmentItem[] = [];
   let extractedChars = 0;
 
+  const pdfFiles = files.filter((file) => isPdfUpload(file));
+  const ocrResults = pdfFiles.length
+    ? await runPaddleOcrForFiles(pdfFiles.map((file) => file.path), (filePath) => sharedOcrOutputDir(filePath))
+    : [];
+  const ocrResultByPath = new Map(ocrResults.map((result) => [result.filePath, result]));
+
   for (const file of files) {
     const name = file.originalname || "未命名文件";
     const kind = uploadKind(file);
     const savedPath = assertWithinWorkspace(file.path);
     if (isPdfUpload(file)) {
       try {
-        const ocrOutputDir = sharedOcrOutputDir(file.path);
-        const ocrResult = await runPaddleOcrForFile(file.path, ocrOutputDir);
+        const ocrResult =
+          ocrResultByPath.get(file.path) ??
+          (await runPaddleOcrForFile(file.path, sharedOcrOutputDir(file.path)));
         if (ocrResult.status === "ok") {
           const autoRag = await maybeRegisterOcrMarkdownMaterial(file.path, name, ocrResult);
           const remaining = Math.max(0, aiDraftMaxExtractedCharsTotal - extractedChars);

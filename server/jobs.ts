@@ -668,13 +668,15 @@ ${memoryPromptSection || "暂无额外记忆条目。"}
 `.trim();
 }
 
-async function buildRagContext(store: Store, course: Course, skipFullRag = false) {
+async function buildRagContext(store: Store, course: Course, skipFullRag = false, allowWebSearch = true) {
   const ragPlan = skipFullRag ? null : await buildRagPlan(store, course, 8);
   const pool = ragPlan?.candidatePool;
   return !ragPlan
     ? "这是补充/继续生成任务：跳过本轮自动 RAG 重检索，优先使用质量检查结果、上一次日志、课程目录现有文件、用户上传资料路径和已提取题目继续完成。必要时只做最小范围补查。"
     : ragPlan.selected.length === 0
-    ? "本地 RAG 暂无命中资料。仍需按 skill 要求搜索本地资料库和可靠网页来源。"
+    ? allowWebSearch
+      ? "本地 RAG 暂无命中资料。仍需按 skill 要求搜索本地资料库和可靠网页来源。"
+      : "本地 RAG 暂无命中资料。不要上网搜索；只能使用课程资料、OCR Markdown、用户提供的本地文件和当前已有本地资料。"
     : [
         `检索查询：${ragPlan.query || "[空]"}`,
         `意图标签：${ragPlan.intentTags.length > 0 ? ragPlan.intentTags.join("、") : "[未识别]"}`,
@@ -941,6 +943,62 @@ ${ragContext}
 `.trim();
 }
 
+function buildTwoPdfStagePrompt(
+  student: Student,
+  course: Course,
+  continuityContext: string,
+  ragContext: string,
+  ocrContext: string,
+  memoryPromptSection?: string
+) {
+  const classroomPdfName = courseClassroomPdfFileName(course, student.name);
+  const teachingPdfName = courseTeachingPdfFileName(course, student.name);
+  return `
+${stageCommonHeader(student, course)}
+
+阶段：两 PDF 精简交付（默认模式，单 Agent，无子 Agent）。
+
+本阶段目标只有一个：直接产出两份 A4 竖版 PDF，最终回复只列出文件路径和简短摘要。
+
+最终必须生成：
+- ${classroomPdfName}：学生课堂讲义，无答案、无完整过程，保留知识梳理、题面、必要图形和干净留白。
+- ${teachingPdfName}：教师授课一体版，题目与必要图形 + 答案/解析；资料已有答案/解析就直接用，资料没有答案就自己补一份完整答案/解析放进去，不能留空或标注“[资料未提供答案]”。
+
+允许的内部工作文件（只在 _work 下，不是交付物）：
+- _work/课堂讲义.tex
+- _work/课堂讲义.pdf
+- _work/授课一体版.tex
+- _work/授课一体版.pdf
+- _work/render 或必要题目图片
+
+硬性边界：
+1. 禁止使用 spawn_agent、followup_task、wait_agent 等任何子 Agent 协作工具；必须自己完成全部题目提取、选题和排版。
+2. 禁止上网搜索真题、模拟题或试卷资料；真题/例题只能来自课程资料、OCR Markdown、用户提供的本地文件和下面给出的本地 RAG 候选。
+3. 不要生成任何 Markdown 交付物，不要生成 老师逐字稿.md、知识点详解.md、课后反馈.md、课件页码映射.md、授课一体版页码映射.md、题目索引.md、候选题池.md、答案核对表.md、课程骨架.md、课件生成计划.md、逐字稿丰富清单.md、内容丰富清单.md。
+4. 不要生成 课后作业.pdf 或 课后作业参考答案.pdf。若本课需要留作业，只在 ${teachingPdfName} 的最后一节写“课后作业（教师版）”；作业答案资料有就用，没有就自己补一份，学生版不出现答案。
+5. 不要调用 lark-cli。飞书上传与日程由宿主服务在任务成功后统一处理。
+6. 读取项目内置 SKILL.md 和 references/math-lesson-core.md 中与题目讲解、PDF 质量、图形、答案核对有关的要求；与本 prompt 冲突的地方，以本 prompt 为准。
+7. 优先读取课程资料、OCR Markdown 和本地 RAG 候选；如果 OCR 已识别，不要重新 OCR，不要用 pdftotext/pdf-parse 替代 OCR，不要逐页调用视觉模型。
+8. 不需要独立核对答案。只根据课程资料、OCR Markdown 和本地 RAG 候选选题；资料已有答案/解析就直接使用，资料没有答案就自己补一份完整答案/解析放进教师版，不能留空、不能标注“[资料未提供答案]”、不能因为没有现成答案就跳过题目。不要为了找答案额外上网搜索或引入新资料。选题时优先典型题：每类题型选最能代表该题型核心方法、识别信号和常见变式的题，优先讲义原题和本地资料例题，不选偏题、怪题或冷门特例。
+9. 两份 PDF 共用同一题序、同一“第X题”编号、同一题面和同一关联图；学生版只留白、不露答案；教师版放入题目、必要图形和答案/解析。资料已有答案就用现成的，资料没有答案时必须自己补一份完整、能直接看的答案/解析。不要过度交付。
+10. 使用 XeLaTeX 编译，用 pdfinfo 检查 A4 和页数；不得为了控制页数删题或压缩排版。
+11. 只允许修改课程目录 _work 和两份最终 PDF；不要修改 lesson-prep-web 项目文件，不要移动历史备课文件。
+12. 按全新任务处理：忽略并覆盖上一次取消任务留下的 _work/课堂讲义.pdf、_work/授课一体版.pdf、根目录旧 PDF 和旧 TeX；必须根据本次资料重新选题、生成，不要复用旧 PDF 或旧题序。
+
+用户确认后的 AI 草稿：
+${formatConfirmedAiDraft(student, course, memoryPromptSection)}
+
+同一学生连续学习上下文：
+${continuityContext}
+
+OCR 预处理结果：
+${ocrContext}
+
+本地 RAG 候选（真题/例题/知识参考只能从这里取；不要上网搜索）：
+${ragContext}
+`.trim();
+}
+
 function buildPdfStagePrompt(student: Student, course: Course) {
   const classroomPdfName = courseClassroomPdfFileName(course, student.name);
   const teachingPdfName = courseTeachingPdfFileName(course, student.name);
@@ -1145,7 +1203,20 @@ async function runStagedCodexJob(
   const ocrContext = await prepareCourseOcrContext(course, append);
   const continuityContext = buildStudentContinuityContext(store, student, course);
   const memoryPromptSection = buildMemoryPromptSection(store, student, course);
-  const ragContext = await buildRagContext(store, course, false);
+  const useTwoPdfMode = course.type === "formal" && config.lessonPrepMode === "two-pdf";
+  const ragContext = await buildRagContext(store, course, false, !useTwoPdfMode);
+
+  if (useTwoPdfMode) {
+    append("Two-PDF simple mode is enabled: single Codex stage, local RAG only, no sub-agents, no markdown deliverables, no separate homework PDFs.\n\n");
+    return runCodexStage(
+      job,
+      "stage-two-pdf",
+      buildTwoPdfStagePrompt(student, course, continuityContext, ragContext, ocrContext, memoryPromptSection),
+      append,
+      extraEnv
+    );
+  }
+
   const foundationCode = await runCodexStage(
     job,
     "stage-1-foundation",
@@ -1514,18 +1585,21 @@ export function continueCodexJob(store: Store, jobId: string) {
   return { ok: true, job, course, recovered: false };
 }
 
-const stagedCompletionMarkers = [
+const legacyStagedCompletionMarkers = [
   "--- END STAGE: stage-1-foundation exit=0 ---",
   "--- END STAGE: stage-2-pdf exit=0 ---",
   "--- END STAGE: stage-3-knowledge exit=0 ---",
   "--- END STAGE: stage-4-script-feedback exit=0 ---"
 ];
 
+const twoPdfStageCompletionMarker = "--- END STAGE: stage-two-pdf exit=0 ---";
+
 function hasSuccessfulStagedCompletion(job: Job) {
   if (!fs.existsSync(job.logPath)) return false;
   const log = fs.readFileSync(job.logPath, "utf8");
   if (!log.startsWith("# staged ")) return false;
-  return stagedCompletionMarkers.every((marker) => log.includes(marker));
+  if (log.includes(twoPdfStageCompletionMarker)) return true;
+  return legacyStagedCompletionMarkers.every((marker) => log.includes(marker));
 }
 
 function inferredJobEndTime(job: Job) {

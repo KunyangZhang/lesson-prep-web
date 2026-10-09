@@ -46,15 +46,17 @@ function writeRequiredOutputs(course: Course, feedback: string) {
   }
 }
 
-test("formal course quality requires homework and its answer PDF", () => {
-  const outputDir = fs.mkdtempSync(path.join(process.cwd(), ".test-quality-homework-"));
+test("formal course quality requires only the two classroom PDFs in two-pdf mode", () => {
+  const outputDir = fs.mkdtempSync(path.join(process.cwd(), ".test-quality-two-pdf-"));
   const course = { ...createTrialCourse(outputDir), type: "formal" as const, lessonKind: "正式课" };
 
   try {
     writeRequiredOutputs(course, `# 课后反馈\n\n## 学生课堂表现\n\n课堂参与稳定。\n\n## 课后作业\n\n完成配套四题。${"反馈".repeat(50)}`);
     const quality = assessCourseQuality(course, "测试学生");
-    assert.equal(quality.items.find((item) => item.key === `exists-${homeworkPdfFileName}`)?.status, "pass");
-    assert.equal(quality.items.find((item) => item.key === `exists-${homeworkAnswerPdfFileName}`)?.status, "pass");
+    assert.equal(quality.items.find((item) => item.key === `exists-${courseClassroomPdfFileName(course, "测试学生")}`)?.status, "pass");
+    assert.equal(quality.items.find((item) => item.key === `exists-${courseTeachingPdfFileName(course, "测试学生")}`)?.status, "pass");
+    assert.equal(quality.items.find((item) => item.key === `exists-${homeworkPdfFileName}`), undefined);
+    assert.equal(quality.items.find((item) => item.key === `exists-${homeworkAnswerPdfFileName}`), undefined);
   } finally {
     fs.rmSync(outputDir, { recursive: true, force: true });
   }
