@@ -192,9 +192,9 @@ function normalizeLessonTime(value: unknown) {
   if (!raw) return "";
   const year = new Date().getFullYear();
   const pad = (input: string | number) => String(input).padStart(2, "0");
-  const isoLike = raw.match(/^\d{4}-(\d{1,2})-(\d{1,2})(?:[T\s]+(\d{1,2}):(\d{2}))?/);
+  const isoLike = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s]+(\d{1,2}):(\d{2}))?/);
   if (isoLike) {
-    return `${year}-${pad(isoLike[1])}-${pad(isoLike[2])}T${pad(isoLike[3] || "00")}:${pad(isoLike[4] || "00")}`;
+    return `${isoLike[1]}-${pad(isoLike[2])}-${pad(isoLike[3])}T${pad(isoLike[4] || "00")}:${pad(isoLike[5] || "00")}`;
   }
   const monthDay = raw.match(/(\d{1,2})\s*(?:月|[./-])\s*(\d{1,2})\s*(?:日|号)?(?:\s*(\d{1,2})[:：点时](\d{2})?)?/);
   if (monthDay) {
@@ -208,7 +208,7 @@ function normalizeLessonTime(value: unknown) {
     const time = raw.match(/(\d{1,2})[:：点时](\d{2})?/);
     const hours = time?.[1] || "00";
     const minutes = time?.[2] || "00";
-    return `${year}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(hours)}:${pad(minutes)}`;
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(hours)}:${pad(minutes)}`;
   }
   return "";
 }
@@ -2252,6 +2252,12 @@ app.post("/api/ai-drafts/lesson/commit", requireAuth, (req, res) => {
   const job = createCodexJob(store, course);
   runCodexJob(store, job.id);
   res.json({ student, course: publicCourse(course), job });
+});
+
+app.get("/api/courses", requireAuth, (req, res) => {
+  store.reload();
+  const courses = [...store.data.courses].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  res.json({ courses: courses.map(publicCourse) });
 });
 
 app.get("/api/students/:studentId/courses", requireAuth, (req, res) => {

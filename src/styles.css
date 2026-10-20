@@ -5446,3 +5446,97 @@ textarea:focus {
   .studio-utility .utility-action > span { display: none; }
   .studio-utility > .account-panel { position: fixed; top: 70px; right: 12px; bottom: auto; left: 12px; width: auto; max-height: calc(100dvh - 150px); }
 }
+
+/* Course calendar and student-linked agenda. */
+.course-schedule { display: grid; align-content: start; padding: 18px; gap: 15px; }
+.schedule-filters { display: grid; gap: 12px; }
+.schedule-search { background: #fffefa; }
+.schedule-view-tabs { display: flex; align-items: center; gap: 5px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.schedule-view-tabs > button { display: flex; align-items: center; gap: 5px; min-height: 31px; padding: 6px 9px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.schedule-view-tabs > button.active { color: var(--accent); background: #eaf1e8; font-weight: 700; }
+.schedule-view-tabs > button > span { min-width: 17px; padding: 2px 4px; border-radius: 5px; background: #e7e9e0; font-size: 9px; }
+.schedule-view-tabs > small { margin-left: auto; color: var(--subtle); font-size: 10px; text-align: right; line-height: 1.5; }
+.schedule-month-toolbar, .schedule-month-toolbar > div { display: flex; align-items: center; gap: 8px; }
+.schedule-month-toolbar { justify-content: space-between; gap: 12px; }
+.schedule-month-toolbar > div:first-child { display: grid; gap: 5px; }
+.schedule-month-toolbar h3 { margin: 0; font-size: 19px; line-height: 1.4; font-weight: 700; letter-spacing: -.03em; }
+.schedule-month-toolbar small { font-size: 10px; color: var(--muted); }
+.schedule-month-toolbar .icon-button { width: 28px; min-height: 28px; height: 28px; }
+.schedule-today { border: 1px solid var(--line); border-radius: 7px; background: #fffefa; padding: 5px 9px; color: var(--ink); font-size: 10px; }
+.schedule-weekdays { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); margin-bottom: -10px; }
+.schedule-weekdays span { padding: 5px 0; text-align: center; color: var(--muted); font-size: 10px; }
+.schedule-weekdays span:nth-last-child(-n+2) { color: #ad7b5a; }
+.schedule-month-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border-top: 1px solid var(--line); border-left: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.schedule-day { min-width: 0; min-height: 82px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #fffefa; padding: 5px 3px; }
+.schedule-day.outside { background: #f6f4ed; }
+.schedule-day.selected { background: #eef4eb; box-shadow: inset 0 0 0 1px #76a38a; }
+.schedule-date { display: flex; align-items: center; justify-content: space-between; gap: 2px; width: 100%; min-height: 24px; padding: 0 3px; border: 0; border-radius: 6px; color: var(--ink); background: transparent; font-size: 10px; }
+.schedule-date > span { min-width: 21px; height: 21px; display: grid; place-items: center; border-radius: 50%; }
+.schedule-date > small { color: var(--subtle); font-size: 8px; }
+.schedule-day.today .schedule-date > span { color: #fff; background: var(--accent); }
+.schedule-day.outside .schedule-date { color: #a6aca5; }
+.schedule-date:hover { background: #e6ede2; }
+.schedule-day-events { display: grid; gap: 3px; margin-top: 4px; }
+.schedule-day-events button { display: flex; align-items: center; gap: 3px; width: 100%; min-width: 0; min-height: 18px; padding: 3px; border: 0; border-radius: 4px; background: color-mix(in srgb, var(--student-color, #347965) 9%, #fffefa); color: var(--student-color, #347965); text-align: left; font-size: 10px; }
+.schedule-day-events button > i, .schedule-lesson-copy i { width: 4px; height: 4px; flex: 0 0 4px; border-radius: 50%; background: var(--student-color); }
+.schedule-day-events button > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.schedule-day-events button.active { box-shadow: inset 0 0 0 1px var(--student-color); }
+.schedule-day-events button.schedule-more { color: var(--muted); background: transparent; }
+.schedule-agenda-heading, .schedule-agenda-heading > div { display: flex; align-items: center; gap: 8px; }
+.schedule-agenda-heading { margin-top: 3px; justify-content: space-between; }
+.schedule-agenda-heading strong { font-size: 14px; }
+.schedule-agenda-heading span, .schedule-agenda-heading small { color: var(--muted); font-size: 10px; }
+.schedule-agenda-list { display: grid; gap: 7px; }
+.schedule-lesson { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto 12px; gap: 10px; align-items: center; width: 100%; padding: 13px 10px; border: 1px solid var(--line); border-left: 3px solid var(--student-color); border-radius: 11px; background: #fffefa; color: inherit; text-align: left; }
+.schedule-lesson:hover { background: #f4f7f0; }
+.schedule-lesson.selected { border-color: #98b6a1; border-left-color: var(--student-color); background: #eff5eb; }
+.schedule-time, .schedule-lesson-copy { display: grid; gap: 7px; min-width: 0; }
+.schedule-time > strong { color: var(--accent); font-size: 12px; font-variant-numeric: tabular-nums; }
+.schedule-time > small { color: var(--muted); font-size: 9px; }
+.schedule-lesson-copy > span { display: flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; }
+.schedule-lesson-copy > span > small { color: var(--subtle); font-size: 9px; font-weight: 400; }
+.schedule-lesson-copy > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; }
+.schedule-lesson > .status { font-size: 9px; padding: 4px 6px; }
+.schedule-lesson > svg { color: var(--subtle); }
+.schedule-empty { min-height: 130px; display: grid; align-content: center; justify-items: center; gap: 9px; padding: 16px; color: #94a18e; text-align: center; border: 1px dashed #dce3d6; border-radius: 12px; background: #fafbf6; }
+.schedule-empty strong { color: var(--muted); font-size: 12px; }
+.schedule-empty p { max-width: 260px; margin: 0; color: var(--subtle); font-size: 10px; line-height: 1.8; }
+.schedule-unscheduled-copy { padding: 6px 0; }
+.schedule-unscheduled-copy strong { font-size: 14px; }
+.schedule-unscheduled-copy p { color: var(--muted); font-size: 11px; line-height: 1.8; margin: 7px 0 0; }
+@media (max-width: 680px) {
+  .course-schedule { padding: 13px; gap: 13px; }
+  .schedule-day { min-height: 72px; padding: 4px 2px; }
+  .schedule-date { padding: 0 1px; }
+  .schedule-day-events button { padding: 3px 2px; font-size: 8px; }
+  .schedule-view-tabs > small { font-size: 9px; }
+  .schedule-lesson { grid-template-columns: 46px minmax(0, 1fr) auto; gap: 8px; }
+  .schedule-lesson > svg { display: none; }
+  .schedule-month-toolbar h3 { font-size: 17px; }
+}
+
+/* Keep the course page focused on the calendar; student work stays in Students. */
+.calendar-page { width: min(1440px, 100%); margin: 0 auto; background: var(--panel); border: 1px solid var(--line); border-radius: 20px; overflow: hidden; }
+.calendar-page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 24px 26px; border-bottom: 1px solid var(--line); }
+.calendar-page-heading .eyebrow { margin: 0 0 6px; font-size: 10px; color: var(--muted); }
+.calendar-page-heading h2 { margin: 0; font-family: inherit; font-size: 25px; }
+.calendar-page-heading > p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.8; }
+.calendar-page .course-schedule { padding: 24px 26px; }
+.calendar-page .schedule-filters { grid-template-columns: minmax(170px, 230px) minmax(180px, 1fr); align-items: end; gap: 18px; }
+.schedule-student-filter { font-size: 11px; color: var(--muted); }
+.schedule-student-filter select { background: #fffefa; min-height: 39px; font-size: 12px; }
+.calendar-page .schedule-search { min-height: 42px; }
+.calendar-page .schedule-day { min-height: 105px; padding: 7px 6px; }
+.calendar-page .schedule-day-events button { min-height: 23px; font-size: 11px; padding: 5px; }
+.calendar-page .schedule-date { font-size: 12px; }
+@media (max-width: 680px) {
+  .calendar-page { border-radius: 16px; }
+  .calendar-page-heading { display: grid; gap: 8px; padding: 18px 14px; }
+  .calendar-page-heading h2 { font-size: 21px; }
+  .calendar-page-heading > p { font-size: 11px; }
+  .calendar-page .course-schedule { padding: 16px 11px; }
+  .calendar-page .schedule-filters { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .calendar-page .schedule-day { min-height: 74px; padding: 4px 2px; }
+  .calendar-page .schedule-day-events button { min-height: 17px; font-size: 8px; padding: 3px 2px; }
+  .calendar-page .schedule-date { font-size: 10px; }
+}

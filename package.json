@@ -8,7 +8,7 @@
     "upload": "node scripts/upload-server.mjs",
     "build": "vite build && tsc -p tsconfig.server.json",
     "start": "node dist/server/accountGateway.js",
-    "test": "tsx --test server/*.test.ts",
+    "test": "tsx --test server/*.test.ts scripts/*.test.ts",
     "check": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
     "deploy:check": "node scripts/deploy-check.mjs",
     "smoke": "node scripts/smoke.mjs",

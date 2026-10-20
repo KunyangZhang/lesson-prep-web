@@ -47,6 +47,7 @@ import { AppShell, type AppView } from "./components/AppShell";
 import { DashboardView } from "./features/dashboard/DashboardView";
 import { StudentList } from "./features/students/StudentList";
 import { CourseQueue } from "./features/courses/CourseQueue";
+import { CourseSchedule } from "./features/courses/CourseSchedule";
 import { PreparationTimeline } from "./features/courses/PreparationTimeline";
 import { OutputReview } from "./features/courses/OutputReview";
 import { MaterialsLibraryHeader } from "./features/materials/MaterialsLibrary";
@@ -574,17 +575,20 @@ export default function App() {
   const [students, setStudents] = useState<Student[]>([]);
   const [selectedStudentId, setSelectedStudentId] = useState("");
   const [selectedCourseId, setSelectedCourseId] = useState("");
-  const [courses, setCourses] = useState<Course[]>([]);
+  const [allCourses, setAllCourses] = useState<Course[]>([]);
   const [view, setView] = useState<AppView>("dashboard");
+  const [courseScope, setCourseScope] = useState<"all" | "student">("all");
   const [dashboard, setDashboard] = useState<DashboardSnapshot | null>(null);
   const [dashboardLoading, setDashboardLoading] = useState(true);
   const [insights, setInsights] = useState<LearningInsights | null>(null);
   const [error, setError] = useState("");
   const [accountOpen, setAccountOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const courseRequestId = useRef(0);
 
   const selectedStudent = students.find((student) => student.id === selectedStudentId) || null;
-  const selectedCourse = courses.find((course) => course.id === selectedCourseId) || null;
+  const courses = useMemo(() => allCourses.filter((course) => course.studentId === selectedStudentId), [allCourses, selectedStudentId]);
+  const selectedCourse = courses.find((course) => course.id === selectedCourseId) || courses[0] || null;
   const viewerPath =
     typeof window !== "undefined" && window.location.pathname === "/viewer"
       ? new URLSearchParams(window.location.search).get("path") || ""
@@ -618,6 +622,13 @@ export default function App() {
     setInsights(data.insights);
   }, []);
 
+  const loadCourses = useCallback(async (_studentId?: string) => {
+    const requestId = ++courseRequestId.current;
+    const data = await api.get<{ courses: Course[] }>("/api/courses");
+    if (requestId !== courseRequestId.current) return;
+    setAllCourses((current) => sameJsonList(current, data.courses) ? current : data.courses);
+  }, []);
+
   const loadSession = useCallback(async () => {
     const systemPromise = api.get<SystemInfo>("/api/system");
     const mePromise = api.get<{ user: User }>("/api/me").catch(() => null);
@@ -630,11 +641,11 @@ export default function App() {
     const me = await mePromise;
     if (me) {
       setSession({ system, user: me.user, loading: false });
-      await Promise.all([loadStudents(), loadDashboard(), loadInsights()]);
+      await Promise.all([loadStudents(), loadCourses(), loadDashboard(), loadInsights()]);
       return;
     }
     setSession({ system, user: null, loading: false });
-  }, [loadDashboard, loadInsights, loadStudents]);
+  }, [loadCourses, loadDashboard, loadInsights, loadStudents]);
 
   useEffect(() => {
     loadSession().catch((err) => {
@@ -643,26 +654,7 @@ export default function App() {
     });
   }, [loadSession]);
 
-  const loadCourses = useCallback(async (studentId: string) => {
-    if (!studentId) {
-      setCourses([]);
-      return;
-    }
-    const data = await api.get<{ courses: Course[] }>(`/api/students/${studentId}/courses`);
-    setCourses((current) => (sameJsonList(current, data.courses) ? current : data.courses));
-    setSelectedCourseId((current) => {
-      if (current && data.courses.some((course) => course.id === current)) return current;
-      return data.courses[0]?.id || "";
-    });
-  }, []);
-
-  useEffect(() => {
-    if (session.user && selectedStudentId) {
-      loadCourses(selectedStudentId).catch((err) => setError(err.message));
-    }
-  }, [session.user, selectedStudentId, loadCourses]);
-
-  const runningCourse = courses.some((course) => course.status === "running" || course.status === "queued");
+  const runningCourse = allCourses.some((course) => course.status === "running" || course.status === "queued");
   useInterval(
     () => {
       if (selectedStudentId) loadCourses(selectedStudentId).catch((err) => setError(err.message));
@@ -680,9 +672,9 @@ export default function App() {
   const openDashboardCourse = useCallback(
     async (item: DashboardCourseSummary) => {
       setSelectedStudentId(item.studentId);
-      await loadCourses(item.studentId);
       setSelectedCourseId(item.courseId);
-      setView("courses");
+      setView("students");
+      await loadCourses();
     },
     [loadCourses]
   );
@@ -701,7 +693,7 @@ export default function App() {
         setupRequired={Boolean(session.system?.setupRequired)}
         onAuthed={async (user) => {
           setSession((state) => ({ ...state, user, system: state.system ? { ...state.system, setupRequired: false } : null }));
-          await Promise.all([loadStudents(), loadDashboard(), loadInsights()]);
+          await Promise.all([loadStudents(), loadCourses(), loadDashboard(), loadInsights()]);
         }}
       />
     );
@@ -748,7 +740,7 @@ export default function App() {
             onClick={async () => {
               await api.post("/api/logout");
               setSession((state) => ({ ...state, user: null }));
-              setStudents([]); setCourses([]); setDashboard(null); setInsights(null);
+              setStudents([]); setAllCourses([]); setDashboard(null); setInsights(null);
               setSelectedStudentId(""); setSelectedCourseId(""); setAccountOpen(false); setError(""); setView("dashboard");
               window.location.assign("/");
             }}
@@ -772,6 +764,29 @@ export default function App() {
           />
         ) : view === "materials" ? (
           <MaterialsView system={session.system} onError={setError} />
+        ) : view === "courses" ? (
+          <section className="calendar-page" aria-label="课程日历页面">
+            <header className="calendar-page-heading"><div><p className="eyebrow">Lesson calendar</p><h2>课程日历</h2></div><p>按日期查看安排，点击课程进入对应学生的备课台。</p></header>
+            <CourseSchedule
+              courses={allCourses}
+              students={students}
+              selectedStudentId={selectedStudentId}
+              selectedId={selectedCourse?.id}
+              scope={courseScope}
+              onStudentChange={(id) => {
+                setCourseScope(id ? "student" : "all");
+                if (id) { setSelectedStudentId(id); setSelectedCourseId(""); }
+              }}
+              onSelect={(course) => {
+                setSelectedStudentId(course.studentId);
+                setSelectedCourseId(course.id);
+                setView("students");
+                window.requestAnimationFrame(() => {
+                  if (window.matchMedia("(max-width: 1200px)").matches) document.querySelector(".course-stage-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                });
+              }}
+            />
+          </section>
         ) : (
           <StudentWorkspace
             students={students}
@@ -780,8 +795,9 @@ export default function App() {
             courses={courses}
             selectedCourse={selectedCourse}
             onSelectStudent={(id) => {
+              setCourseScope("student");
               setSelectedStudentId(id);
-              setView("students");
+              setSelectedCourseId("");
             }}
             onSelectCourse={setSelectedCourseId}
             onCreateStudent={async (student) => {
@@ -793,6 +809,7 @@ export default function App() {
               await loadStudents();
               await loadCourses(course.studentId);
               await loadDashboard();
+              setSelectedStudentId(course.studentId);
               setSelectedCourseId(course.id);
             }}
             onRefresh={async () => {
@@ -813,7 +830,7 @@ export default function App() {
               if (!window.confirm(`删除学生「${student.name}」？课程记录会从网页移除，但已生成文件会保留。`)) return;
               await api.del(`/api/students/${student.id}`);
               setSelectedCourseId("");
-              await Promise.all([loadStudents(), loadDashboard()]);
+              await Promise.all([loadStudents(), loadCourses(), loadDashboard()]);
             }}
             onError={setError}
           />
@@ -1201,7 +1218,10 @@ function StudentWorkspace({
         students={students}
         selectedId={selectedStudentId}
         createSlot={<CreateStudentForm onCreated={onCreateStudent} onError={onError} />}
-        onSelect={onSelectStudent}
+        onSelect={(id) => {
+          setShowLessonPrep(false);
+          onSelectStudent(id);
+        }}
         onDelete={(item) => onDeleteStudent(item).catch((err) => onError(err.message))}
       />
 
@@ -1283,7 +1303,7 @@ function StudentWorkspace({
             />
           </section>
 
-          <section className="course-stage-panel">
+          <section className="course-stage-panel" aria-label="课程详情">
             <CourseDetail
               student={student}
               courses={orderedCourses}

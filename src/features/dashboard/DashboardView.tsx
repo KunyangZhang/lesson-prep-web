@@ -87,7 +87,7 @@ export function DashboardView({
           <h2>{greeting()}，{userName}</h2>
           <p>先处理需要关注的课程，再开始新的备课。工作台已经把进度、质量和课后沉淀放到一处。</p>
           <div className="dashboard-hero-actions">
-            <button className="primary-button warm-primary" onClick={() => onNavigate("courses")}>
+            <button className="primary-button warm-primary" onClick={() => onNavigate("students")}>
               <Sparkles size={17} />
               准备一节课
             </button>

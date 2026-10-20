@@ -64,9 +64,12 @@ try {
   }
   const legacy = await login("kunyang"), admin = await login("admin");
   assert.equal((await request(null, "/api/students")).response.status, 401);
+  assert.equal((await request(null, "/api/courses")).response.status, 401);
   assert.equal((await request(null, "/api/feishu/settings")).response.status, 401);
   assert.equal((await request(legacy, "/api/students")).data.students[0].id, legacyStudent.id);
   assert.equal((await request(admin, "/api/students")).data.students.length, 0);
+  assert.equal((await request(admin, "/api/courses")).data.courses.length, 0);
+  assert.equal((await request(legacy, "/api/courses")).data.courses[0].id, course.id);
   assert.equal((await request(admin, "/api/courses/course_legacy")).response.status, 404);
   assert.equal((await request(admin, "/api/students/student_legacy", "PATCH", { name: "cross-account-change" })).response.status, 404);
   assert.equal((await request(admin, "/api/students/student_legacy", "DELETE")).response.status, 404);
@@ -105,6 +108,15 @@ try {
   assert.equal(dashboard.data.dashboard.metrics.studentCount, 1);
   assert.equal(dashboard.data.dashboard.metrics.courseCount, 0);
   assert.equal((await request(legacy, "/api/dashboard")).data.dashboard.metrics.courseCount, 1);
+  const planned = await request(admin, `/api/students/${adminStudent.id}/courses`, "POST", { desiredContent: "跨年课程排期", lessonTime: "2027-01-05T16:30", autoRun: false });
+  assert.equal(planned.response.status, 200);
+  assert.equal(planned.data.course.lessonTime, "2027-01-05T16:30");
+  const adminSchedule = (await request(admin, "/api/courses")).data.courses;
+  assert.equal(adminSchedule.length, 1);
+  assert.equal(adminSchedule[0].studentId, adminStudent.id);
+  assert.equal((await request(legacy, "/api/courses")).data.courses.length, 1);
+  assert.equal((await request(legacy, `/api/courses/${planned.data.course.id}`)).response.status, 404);
+  assert.equal((await request(admin, `/api/courses/${planned.data.course.id}`, "PATCH", { lessonTime: "2027-02-06T09:00" })).data.course.lessonTime, "2027-02-06T09:00");
   const credentials = await request(admin, "/api/me", "PATCH", { currentPassword: "123456", username: "admin-updated", newPassword: "new-test-password" });
   assert.equal(credentials.response.status, 200);
   await login("admin-updated", "new-test-password");
@@ -123,6 +135,7 @@ try {
   }
   const persistedAdmin = await login("admin-updated", "new-test-password");
   assert.equal((await request(persistedAdmin, "/api/students")).data.students[0].id, adminStudent.id);
+  assert.equal((await request(persistedAdmin, "/api/courses")).data.courses[0].lessonTime, "2027-02-06T09:00");
   assert.equal((await request(persistedAdmin, "/api/feishu/settings")).data.settings.folderToken, "AdminFolder123");
   assert.equal((await request(await login("kunyang"), "/api/students")).data.students[0].id, legacyStudent.id);
   console.log("[accounts] PASS: login, legacy migration, empty admin workspace, independent students/memories/dashboard/backup/Feishu, cross-account rejection, credential updates and restart persistence");

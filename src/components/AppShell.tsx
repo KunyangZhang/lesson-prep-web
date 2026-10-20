@@ -16,7 +16,7 @@ export type AppView = "dashboard" | "students" | "courses" | "materials";
 const navigation: Array<{ key: AppView; label: string; hint: string; icon: typeof LayoutDashboard }> = [
   { key: "dashboard", label: "今日", hint: "总览与待办", icon: LayoutDashboard },
   { key: "students", label: "学生", hint: "档案与学情", icon: GraduationCap },
-  { key: "courses", label: "课程", hint: "计划与产物", icon: CalendarDays },
+  { key: "courses", label: "课程", hint: "日程与产物", icon: CalendarDays },
   { key: "materials", label: "资料库", hint: "检索与索引", icon: LibraryBig }
 ];
 
