@@ -21,7 +21,7 @@ function sessionCookieOptions(maxAge: number) {
   };
 }
 
-function getSecret() {
+export function getSecret() {
   if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
 
   const secretPath = path.join(config.dataDir, "session-secret.txt");

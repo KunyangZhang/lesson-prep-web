@@ -40,6 +40,9 @@ import {
   UserRound
 } from "lucide-react";
 import { api } from "./api";
+import { shortCourseTitle } from "./courseTitle";
+import { LearningNote } from "./features/students/LearningNotes";
+import { FeishuSetup } from "./features/settings/FeishuSetup";
 import { AppShell, type AppView } from "./components/AppShell";
 import { DashboardView } from "./features/dashboard/DashboardView";
 import { StudentList } from "./features/students/StudentList";
@@ -189,14 +192,6 @@ function formatAiDraftSavedAt(value: string) {
 }
 
 const folderPickerProps = { webkitdirectory: "", directory: "" };
-const agentWorkFiles = [
-  { paths: ["_work/连续学习档案.md"], label: "连续学习" },
-  { paths: ["_work/题目提取.md", "_work/题目索引.md"], label: "题目提取" },
-  { paths: ["_work/答案核对表.md"], label: "答案核对" },
-  { paths: ["_work/课件生成计划.md", "_work/课件页码映射.md", "_work/授课一体版页码映射.md"], label: "课件生成" },
-  { paths: ["_work/逐字稿丰富清单.md", "_work/内容丰富清单.md"], label: "逐字稿丰富" }
-];
-
 function useInterval(callback: () => void, delay: number | null) {
   const savedCallback = useRef(callback);
 
@@ -732,7 +727,7 @@ export default function App() {
       onDismissError={() => setError("")}
       utility={
         <>
-          <button className="utility-action" onClick={() => setAccountOpen((value) => !value)}>
+          <button className="utility-action" aria-label="账号与系统" onClick={() => setAccountOpen((value) => !value)}>
             <Settings size={17} />
             <span>账号与系统</span>
           </button>
@@ -749,9 +744,13 @@ export default function App() {
           ) : null}
           <button
             className="utility-action"
+            aria-label="退出登录"
             onClick={async () => {
               await api.post("/api/logout");
               setSession((state) => ({ ...state, user: null }));
+              setStudents([]); setCourses([]); setDashboard(null); setInsights(null);
+              setSelectedStudentId(""); setSelectedCourseId(""); setAccountOpen(false); setError(""); setView("dashboard");
+              window.location.assign("/");
             }}
           >
             <LogOut size={17} />
@@ -929,7 +928,7 @@ function AuthScreen({ setupRequired, onAuthed }: { setupRequired: boolean; onAut
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               autoComplete={setupRequired ? "new-password" : "current-password"}
-              minLength={8}
+              minLength={setupRequired ? 8 : undefined}
             />
           </label>
           {error ? <p className="form-error">{error}</p> : null}
@@ -959,6 +958,7 @@ function AccountSettings({
   const [newPassword, setNewPassword] = useState("");
   const [saving, setSaving] = useState(false);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [feishuOpen, setFeishuOpen] = useState(false);
   const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
 
@@ -1072,6 +1072,10 @@ function AccountSettings({
         {diagnosticsBusy ? <Loader2 className="spin" size={16} /> : <Stethoscope size={16} />}
         系统诊断
       </button>
+      <button type="button" className="ghost-button" onClick={() => setFeishuOpen(true)}>
+        <ExternalLink size={16} />飞书连接与同步
+      </button>
+      {feishuOpen ? <FeishuSetup onClose={() => setFeishuOpen(false)} /> : null}
       {diagnostics ? <DiagnosticsPanel diagnostics={diagnostics} /> : null}
     </form>
   );
@@ -1188,8 +1192,7 @@ function StudentWorkspace({
   onDeleteStudent: (student: Student) => Promise<void>;
   onError: (message: string) => void;
 }) {
-  const [showForm, setShowForm] = useState(false);
-  const [showAiDraft, setShowAiDraft] = useState(false);
+  const [showLessonPrep, setShowLessonPrep] = useState(false);
   const orderedCourses = useMemo(() => sortCoursesByTimelineDesc(courses), [courses]);
 
   return (
@@ -1216,41 +1219,24 @@ function StudentWorkspace({
                   <RefreshCcw size={16} />
                   刷新
                 </button>
-                <button className="ghost-button" onClick={() => setShowAiDraft((value) => !value)}>
+                <button className="primary-button" aria-expanded={showLessonPrep} aria-controls={`lesson-prep-${student.id}`} onClick={() => setShowLessonPrep((value) => !value)}>
                   <Sparkles size={17} />
-                  AI 草稿
-                </button>
-                <button className="primary-button" onClick={() => setShowForm((value) => !value)}>
-                  <Plus size={17} />
-                  新建课程
+                  智能备课
                 </button>
               </div>
             </header>
 
-            {showAiDraft || showForm ? (
-              <section className="workspace-drawer">
-                {showAiDraft ? (
-                  <AiLessonDraftPanel
-                    key={student.id}
-                    initialStudent={student}
-                    onCreated={async (course) => {
-                      setShowAiDraft(false);
-                      onCreated(course);
-                    }}
-                    onError={onError}
-                  />
-                ) : null}
-
-                {showForm ? (
-                  <CourseForm
-                    student={student}
-                    onCreated={(course) => {
-                      setShowForm(false);
-                      onCreated(course);
-                    }}
-                    onError={onError}
-                  />
-                ) : null}
+            {showLessonPrep ? (
+              <section className="workspace-drawer" id={`lesson-prep-${student.id}`}>
+                <AiLessonDraftPanel
+                  key={student.id}
+                  initialStudent={student}
+                  onCreated={async (course) => {
+                    setShowLessonPrep(false);
+                    onCreated(course);
+                  }}
+                  onError={onError}
+                />
               </section>
             ) : null}
 
@@ -1459,10 +1445,7 @@ function StudentDossierPanel({
   const runningCourses = courses.filter((course) => course.status === "running" || course.status === "queued");
   const postClassPendingCourses = completedCourses.filter((course) => course.postClassSummary?.status !== "confirmed");
   const latestConfirmedCourse = sortCoursesByTimelineDesc(completedCourses).find((course) => course.postClassSummary?.status === "confirmed");
-  const coveredItems = courses
-    .map((course) => course.desiredContent || course.lessonKind || course.grade)
-    .filter(Boolean)
-    .slice(0, 10);
+  const coveredCourses = sortCoursesByTimelineDesc(courses).slice(0, 10);
   const recentRecords = sortCoursesByTimelineDesc(courses).slice(0, 6);
 
   return (
@@ -1493,7 +1476,7 @@ function StudentDossierPanel({
       <div className="dossier-continuity">
         <div>
           <span className="dossier-label">最近确认沉淀</span>
-          <strong>{latestConfirmedCourse?.desiredContent || "暂无确认记录"}</strong>
+          <strong title={latestConfirmedCourse?.desiredContent}>{latestConfirmedCourse ? shortCourseTitle(latestConfirmedCourse.desiredContent) : "暂无确认记录"}</strong>
           <small>{latestConfirmedCourse ? formatDate(latestConfirmedCourse.lessonTime || latestConfirmedCourse.createdAt) : "完成课后确认后会作为下一节课上下文"}</small>
         </div>
         <div>
@@ -1510,32 +1493,25 @@ function StudentDossierPanel({
         </div>
       ) : null}
 
-      <div className="dossier-section">
-        <span className="dossier-label">已上/已规划内容</span>
-        {coveredItems.length > 0 ? (
-          <div className="covered-content-list">
-            {coveredItems.map((item, index) => (
-              <span key={`${item}-${index}`}>{item}</span>
+      <section className="learning-coverage">
+        <div className="learning-note-heading"><span><BookOpen size={16} /><strong>学习内容</strong></span><small>{courses.length} 节课程</small></div>
+        {coveredCourses.length > 0 ? (
+          <div className="learning-course-list">
+            {coveredCourses.slice(0, 4).map((item) => (
+              <button type="button" key={item.id} onClick={() => onSelectCourse(item.id)} title={item.desiredContent}>
+                <span className={statusClass(item.status)}>{item.status === "completed" ? "备课完成" : statusLabel(item.status)}</span>
+                <strong>{shortCourseTitle(item.desiredContent)}</strong>
+                <small>{formatDate(item.lessonTime || item.createdAt)}</small><ChevronRight size={14} />
+              </button>
             ))}
+            {coveredCourses.length > 4 ? <details className="learning-more-courses"><summary>更多课程（{coveredCourses.length - 4}）</summary>
+              {coveredCourses.slice(4).map((item) => <button type="button" key={item.id} onClick={() => onSelectCourse(item.id)}><strong>{shortCourseTitle(item.desiredContent)}</strong><ChevronRight size={14} /></button>)}
+            </details> : null}
           </div>
-        ) : (
-          <small className="dossier-empty">创建课程后会自动沉淀内容</small>
-        )}
-      </div>
-
-      {student.learningMemory ? (
-        <div className="dossier-section">
-          <span className="dossier-label">连续学习记忆</span>
-          <small className="dossier-memory">{student.learningMemory}</small>
-        </div>
-      ) : null}
-
-      {student.learningRoadmap ? (
-        <div className="dossier-section">
-          <span className="dossier-label">长期学习路线图</span>
-          <small className="dossier-memory">{student.learningRoadmap}</small>
-        </div>
-      ) : null}
+        ) : <p className="learning-empty">创建课程后，在这里查看学习安排与备课进度。</p>}
+      </section>
+      {student.learningMemory ? <LearningNote key={`${student.id}-memory`} title="连续学习记忆" content={student.learningMemory} /> : null}
+      {student.learningRoadmap ? <LearningNote key={`${student.id}-roadmap`} title="长期学习路线图" content={student.learningRoadmap} /> : null}
 
       <div className="dossier-section">
         <span className="dossier-label">上课记录</span>
@@ -1550,7 +1526,7 @@ function StudentDossierPanel({
                 onClick={() => onSelectCourse(course.id)}
               >
                 <span className={statusClass(course.status)}>{statusLabel(course.status)}</span>
-                <strong>{course.desiredContent || "未命名课程"}</strong>
+                <strong title={course.desiredContent}>{shortCourseTitle(course.desiredContent)}</strong>
                 <small>
                   {formatDate(course.lessonTime || course.createdAt)} · {course.durationMinutes || 90} 分钟 · {postClassStateLabel(course)}
                 </small>
@@ -1998,7 +1974,7 @@ function AiLessonDraftPanel({
         <div className="form-heading">
           <span>
             <Sparkles size={17} />
-            <strong>AI 备课草稿</strong>
+            <strong>智能备课</strong>
           </span>
           <div className="ai-draft-heading-tools">
             <small>{lastAutoSavedAt ? `已自动保存 ${formatAiDraftSavedAt(lastAutoSavedAt)}` : "只整理学生和课程字段，调用备课 Agent 时再检索资料"}</small>
@@ -2140,299 +2116,6 @@ function AiLessonDraftPanel({
         )}
       </div>
     </section>
-  );
-}
-
-function CourseForm({
-  student,
-  onCreated,
-  onError
-}: {
-  student: Student;
-  onCreated: (course: Course) => void;
-  onError: (message: string) => void;
-}) {
-  const [form, setForm] = useState({ ...emptyCourseForm, stage: student.stage || emptyCourseForm.stage });
-  const [submitting, setSubmitting] = useState(false);
-  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
-  const [materialQuery, setMaterialQuery] = useState("");
-  const [materialResults, setMaterialResults] = useState<RagSearchResult[]>([]);
-  const [searchingMaterials, setSearchingMaterials] = useState(false);
-  const continuitySuggestion = student.nextLessonSuggestion?.trim() || "";
-
-  function update(name: string, value: string | number | boolean) {
-    setForm((current) => ({ ...current, [name]: value }));
-  }
-
-  function addPendingFiles(files: FileList | null) {
-    if (!files?.length) return;
-    setPendingFiles((current) => [...current, ...Array.from(files)]);
-  }
-
-  function addMaterialPath(pathValue: string) {
-    setForm((current) => ({ ...current, localFiles: appendPathsText(current.localFiles, [pathValue]) }));
-  }
-
-  async function searchMaterials() {
-    if (!materialQuery.trim()) {
-      setMaterialResults([]);
-      return;
-    }
-    setSearchingMaterials(true);
-    try {
-      const data = await api.get<{ results: RagSearchResult[] }>(`/api/materials/search?q=${encodeURIComponent(materialQuery)}`);
-      setMaterialResults(data.results);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSearchingMaterials(false);
-    }
-  }
-
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    setSubmitting(true);
-    try {
-      const shouldRunAfterUpload = form.autoRun && pendingFiles.length > 0;
-      const createPayload = shouldRunAfterUpload ? { ...form, autoRun: false } : form;
-      const data = await api.post<{ course: Course }>(`/api/students/${student.id}/courses`, createPayload);
-      let course = data.course;
-      if (pendingFiles.length > 0) {
-        const formData = new FormData();
-        pendingFiles.forEach((file) => formData.append("files", file, file.name));
-        const uploadData = await api.post<{ course: Course }>(`/api/courses/${course.id}/attachments`, formData);
-        course = uploadData.course;
-      }
-      if (shouldRunAfterUpload) {
-        const runData = await api.post<{ course: Course; job: Job }>(`/api/courses/${course.id}/run`);
-        course = runData.course;
-      }
-      onCreated(course);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <form className="course-form" onSubmit={submit}>
-      <TemplateManager
-        draft={{
-          type: form.type === "trial" ? "trial" : "formal",
-          durationMinutes: form.durationMinutes,
-          textbook: form.textbook,
-          lessonKind: form.lessonKind,
-          notes: form.notes,
-          codexPromptOverride: form.codexPromptOverride
-        }}
-        onApply={(template) => setForm((current) => ({
-          ...current,
-          type: template.type,
-          durationMinutes: template.durationMinutes,
-          textbook: template.textbook,
-          lessonKind: template.lessonKind,
-          notes: template.notes,
-          codexPromptOverride: template.codexPromptOverride
-        }))}
-        onError={onError}
-      />
-      <div className="segmented">
-        <button type="button" className={form.type === "formal" ? "active" : ""} onClick={() => update("type", "formal")}>
-          正式课
-        </button>
-        <button type="button" className={form.type === "trial" ? "active" : ""} onClick={() => update("type", "trial")}>
-          试听课
-        </button>
-      </div>
-
-      <div className="composer-step">
-        <span>01</span>
-        <div><strong>课程基础</strong><small>确定时间、学段与课程类型</small></div>
-      </div>
-
-      <div className="form-grid">
-        <label>
-          学段
-          <select value={form.stage} onChange={(event) => update("stage", event.target.value)}>
-            <option>高中数学</option>
-            <option>初中数学</option>
-            <option>高等数学</option>
-            <option>其他</option>
-          </select>
-        </label>
-        <label>
-          年级
-          <input value={form.grade} onChange={(event) => update("grade", event.target.value)} placeholder="高二 / 初三" />
-        </label>
-        <label>
-          分数
-          <input value={form.score} onChange={(event) => update("score", event.target.value)} placeholder="最近考试分数或水平" />
-        </label>
-        <label>
-          上课时间
-          <input type="datetime-local" value={form.lessonTime} onChange={(event) => update("lessonTime", event.target.value)} />
-        </label>
-        <label>
-          课长
-          <input
-            type="number"
-            min={20}
-            max={240}
-            step={5}
-            value={form.durationMinutes}
-            onChange={(event) => update("durationMinutes", Number(event.target.value))}
-          />
-        </label>
-        <label>
-          地区
-          <input value={form.province} onChange={(event) => update("province", event.target.value)} placeholder="新高考 I / 广东" />
-        </label>
-        <label>
-          教材版本
-          <input value={form.textbook} onChange={(event) => update("textbook", event.target.value)} placeholder="人教A版" />
-        </label>
-        <label>
-          课程性质
-          <select value={form.lessonKind} onChange={(event) => update("lessonKind", event.target.value)}>
-            <option>专题提升</option>
-            <option>同步巩固</option>
-            <option>错题复盘</option>
-            <option>培优拓展</option>
-            <option>考前冲刺</option>
-            <option>作业答疑</option>
-          </select>
-        </label>
-      </div>
-
-      <div className="composer-step">
-        <span>02</span>
-        <div><strong>本课目标</strong><small>说清楚这节课要解决的问题</small></div>
-      </div>
-
-      {continuitySuggestion ? (
-        <div className="continuity-seed">
-          <div>
-            <strong>上次课给出的下节课建议</strong>
-            <small>{continuitySuggestion}</small>
-          </div>
-          <button
-            type="button"
-            className="ghost-button"
-            onClick={() => update("desiredContent", form.desiredContent.trim() ? `${form.desiredContent.trim()}\n${continuitySuggestion}` : continuitySuggestion)}
-          >
-            <ChevronRight size={16} />
-            填入本课主题
-          </button>
-        </div>
-      ) : null}
-
-      <label>
-        想听的内容
-        <textarea
-          value={form.desiredContent}
-          onChange={(event) => update("desiredContent", event.target.value)}
-          placeholder="例如：高二概率，条件概率与连续抽球，希望有大招和真题变式"
-          rows={3}
-          required
-        />
-      </label>
-      <div className="composer-step">
-        <span>03</span>
-        <div><strong>资料与生成</strong><small>补充依据，决定是否立即运行</small></div>
-      </div>
-      <label>
-        本地题目/资料路径
-        <textarea
-          value={form.localFiles}
-          onChange={(event) => update("localFiles", event.target.value)}
-          placeholder="可粘贴 PDF、docx、图片或文件夹路径，一行一个"
-          rows={2}
-        />
-      </label>
-      <section className="resource-picker">
-        <div className="resource-actions">
-          <label className="ghost-button file-button">
-            <Upload size={16} />
-            上传本地文件
-            <input
-              type="file"
-              multiple
-              onChange={(event) => {
-                addPendingFiles(event.target.files);
-                event.target.value = "";
-              }}
-            />
-          </label>
-          <label className="ghost-button file-button">
-            <Image size={16} />
-            上传图片
-            <input
-              type="file"
-              accept="image/*"
-              multiple
-              onChange={(event) => {
-                addPendingFiles(event.target.files);
-                event.target.value = "";
-              }}
-            />
-          </label>
-          <span>{pendingFiles.length > 0 ? `${pendingFiles.length} 个文件待上传` : "文件会在创建课程后保存到课程目录"}</span>
-        </div>
-        <div className="material-select-row">
-          <Search size={16} />
-          <input
-            value={materialQuery}
-            onChange={(event) => setMaterialQuery(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                searchMaterials();
-              }
-            }}
-            placeholder="搜索资料库后手动加入课程"
-          />
-          <button type="button" className="ghost-button" onClick={searchMaterials} disabled={searchingMaterials}>
-            {searchingMaterials ? <Loader2 className="spin" size={16} /> : <Search size={16} />}
-            搜索
-          </button>
-        </div>
-        {materialResults.length > 0 ? (
-          <div className="material-pick-list">
-            {materialResults.slice(0, 6).map((result) => (
-              <button type="button" key={result.material.path} onClick={() => addMaterialPath(result.material.path)}>
-                <strong>{result.material.title}</strong>
-                <small>{result.reason}</small>
-              </button>
-            ))}
-          </div>
-        ) : null}
-      </section>
-      <label>
-        备注
-        <textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} rows={2} />
-      </label>
-      <label>
-        AI 生成要求
-        <textarea
-          value={form.codexPromptOverride}
-          onChange={(event) => update("codexPromptOverride", event.target.value)}
-          placeholder="可选：写入长期复用的风格、难度或版式要求"
-          rows={2}
-        />
-      </label>
-
-      <div className="form-footer">
-        <label className="check-row">
-          <input type="checkbox" checked={form.autoRun} onChange={(event) => update("autoRun", event.target.checked)} />
-          创建后自动调用 Codex
-        </label>
-        <button className="primary-button" disabled={submitting}>
-          {submitting ? <Loader2 className="spin" size={17} /> : <Play size={17} />}
-          创建课程
-        </button>
-      </div>
-    </form>
   );
 }
 
@@ -2707,7 +2390,7 @@ function CourseContinuityBar({
         <span>上一节</span>
         {previousCourse ? (
           <button type="button" className="continuity-link" onClick={() => onSelectCourse(previousCourse.id)}>
-            {previousCourse.desiredContent || "未命名课程"}
+            {shortCourseTitle(previousCourse.desiredContent)}
           </button>
         ) : (
           <strong>暂无历史课</strong>
@@ -2723,12 +2406,12 @@ function CourseContinuityBar({
         <span>下一节</span>
         {nextCourse ? (
           <button type="button" className="continuity-link" onClick={() => onSelectCourse(nextCourse.id)}>
-            {nextCourse.desiredContent || "未命名课程"}
+            {shortCourseTitle(nextCourse.desiredContent)}
           </button>
         ) : (
           <strong>{student.nextLessonSuggestion ? compactText(student.nextLessonSuggestion, 80) : "待规划"}</strong>
         )}
-        <small>{nextCourse ? formatDate(nextCourse.lessonTime || nextCourse.createdAt) : "新建课程时可沿用下节课建议"}</small>
+        <small>{nextCourse ? formatDate(nextCourse.lessonTime || nextCourse.createdAt) : "智能备课时可沿用下节课建议"}</small>
       </div>
     </section>
   );
@@ -3057,13 +2740,9 @@ function CourseDetail({
 
   const currentQuality = job?.quality || manualQuality;
   const selectedMaterials = splitLocalFiles(course.localFiles);
-  const agentWorkStatus = agentWorkFiles.map((workFile) => ({
-    ...workFile,
-    file: files.find((file) => workFile.paths.includes(file.relativePath.replace(/\\/g, "/"))) || null
-  }));
   const tabs: Array<{ key: CourseDetailTab; label: string; count?: number }> = [
     { key: "preview", label: "产物预览", count: previewFiles.length },
-    { key: "workflow", label: "资料与流程", count: agentWorkStatus.filter((item) => item.file).length },
+    { key: "workflow", label: "课程资料" },
     { key: "postClass", label: "课后沉淀", count: course.postClassSummary?.status === "confirmed" ? 1 : undefined },
     { key: "activity", label: "任务记录", count: jobs.length }
   ];
@@ -3073,7 +2752,7 @@ function CourseDetail({
       <header className="detail-header course-console-header">
         <div>
           <span className={statusClass(course.status)}>{statusLabel(course.status)}</span>
-          <h3>{course.desiredContent || "未命名课程"}</h3>
+          <h3 title={course.desiredContent}>{shortCourseTitle(course.desiredContent)}</h3>
           <p>
             {course.type === "trial" ? "试听课" : "正式课"} · {course.grade || "年级待填"} · {course.durationMinutes} 分钟
           </p>
@@ -3136,6 +2815,11 @@ function CourseDetail({
         </div>
       </header>
 
+      <details className="course-requirements">
+        <summary><FileText size={14} />完整备课要求<ChevronRight size={14} /></summary>
+        <div><ReactMarkdown remarkPlugins={[remarkGfm]}>{course.desiredContent || "暂无补充要求"}</ReactMarkdown></div>
+      </details>
+
       <section className="course-overview-band">
         <div className="meta-strip">
           <span>
@@ -3144,7 +2828,7 @@ function CourseDetail({
           </span>
           <span>{course.score || "分数待填"}</span>
           <span>{course.province || "地区待填"}</span>
-          <span>{course.lessonKind || "课程性质待填"}</span>
+          <span title={course.lessonKind}>{shortCourseTitle(course.lessonKind || "课程性质待填", 16)}</span>
         </div>
 
         <CourseContinuityBar student={student} course={course} courses={courses} onSelectCourse={onSelectCourse} />
@@ -3298,7 +2982,6 @@ function CourseDetail({
               ) : null}
             </section>
 
-            <AgentWorkPanel items={agentWorkStatus} />
             {currentQuality ? <QualityPanel quality={currentQuality} /> : null}
           </section>
         ) : null}
@@ -3433,30 +3116,6 @@ function CourseDetail({
             </form>
           </section>
         ) : null}
-      </div>
-    </section>
-  );
-}
-
-function AgentWorkPanel({
-  items
-}: {
-  items: Array<{ paths: string[]; label: string; file: CourseFile | null }>;
-}) {
-  const completed = items.filter((item) => item.file).length;
-  return (
-    <section className="agent-work-panel">
-      <div className="agent-work-head">
-        <strong>多 Agent 工作区</strong>
-        <small>{completed}/{items.length}</small>
-      </div>
-      <div className="agent-work-list">
-        {items.map((item) => (
-          <div key={item.label} className={item.file ? "agent-work-item done" : "agent-work-item missing"}>
-            <span>{item.label}</span>
-            <small>{item.file ? `${Math.max(1, Math.round(item.file.size / 1024))} KB · ${formatDate(item.file.updatedAt)}` : "待生成"}</small>
-          </div>
-        ))}
       </div>
     </section>
   );

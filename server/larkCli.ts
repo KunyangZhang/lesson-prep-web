@@ -6,6 +6,7 @@ import { config as appConfig } from "./config.js";
 interface LarkCliRunOptions {
   cwd?: string;
   timeoutMs?: number;
+  stdin?: string;
 }
 
 interface CalendarCreateOptions {
@@ -129,9 +130,8 @@ function unwrapCliData(value: unknown) {
   return record.data || record.result || value;
 }
 
-async function runLarkCliWithCurrentAuth<T>(args: string[], options: LarkCliRunOptions = {}): Promise<LarkCliResult<T>> {
-  const timeoutMs = options.timeoutMs || 120_000;
-  const env = { ...process.env };
+export function larkCliEnvironment(dataDir: string, source: NodeJS.ProcessEnv = process.env) {
+  const env = { ...source };
   for (const key of [
     "LARKSUITE_CLI_APP_ID",
     "LARKSUITE_CLI_APP_SECRET",
@@ -142,7 +142,18 @@ async function runLarkCliWithCurrentAuth<T>(args: string[], options: LarkCliRunO
   ]) {
     delete env[key];
   }
-  env.LARKSUITE_CLI_NO_UPDATE_NOTIFIER = process.env.LARKSUITE_CLI_NO_UPDATE_NOTIFIER || "1";
+  env.LARKSUITE_CLI_NO_UPDATE_NOTIFIER = "1";
+  if (env.PREP_ACCOUNT_ID && env.PREP_LEGACY_ACCOUNT !== "true") {
+    env.LARKSUITE_CLI_CONFIG_DIR = path.join(dataDir, "feishu", "config");
+    env.LARKSUITE_CLI_DATA_DIR = path.join(dataDir, "feishu", "keychain");
+    env.LARKSUITE_CLI_LOG_DIR = path.join(dataDir, "feishu", "logs");
+  }
+  return env;
+}
+
+export async function runLarkCliWithCurrentAuth<T>(args: string[], options: LarkCliRunOptions = {}): Promise<LarkCliResult<T>> {
+  const timeoutMs = options.timeoutMs || 120_000;
+  const env = larkCliEnvironment(appConfig.dataDir);
   return new Promise((resolve, reject) => {
     const child = spawn(larkCliBinary(), args, {
       cwd: options.cwd || appConfig.projectRoot,
@@ -155,8 +166,11 @@ async function runLarkCliWithCurrentAuth<T>(args: string[], options: LarkCliRunO
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
-      reject(new Error(`lark-cli timed out after ${timeoutMs}ms: ${args.join(" ")}`));
+      reject(new Error(`飞书请求超时，请重试。`));
     }, timeoutMs);
+
+    child.stdin.on("error", () => { /* Process errors are reported by close/error. */ });
+    child.stdin.end(options.stdin);
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();

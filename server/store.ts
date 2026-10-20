@@ -48,7 +48,7 @@ export class Store {
     if (!this.persist) return;
     fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
     const tmpPath = `${this.dbPath}.${process.pid}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(this.data, null, 2), "utf8");
+    fs.writeFileSync(tmpPath, JSON.stringify(this.data, null, 2), { encoding: "utf8", mode: 0o600 });
     fs.renameSync(tmpPath, this.dbPath);
   }
 

@@ -7,6 +7,15 @@
 ![RAG](https://img.shields.io/badge/retrieval-Hybrid%20RAG-059669)
 ![Stack](https://img.shields.io/badge/stack-React%20%2B%20Node.js-111827)
 
+## 登录账号与飞书隔离
+
+- 通过 `npm start` 或 `npm run dev` 启动账号网关。每个账号使用独立的应用进程、学生/课程数据库、资料库、学习记忆、任务及资料索引。
+- 首次升级会将登录凭据保存到 `APP_DATA_DIR/accounts.json`，原有备课数据归 `kunyang`（若不存在则归首个原有账号），归属记录保存在 `accounts-meta.json`。原有课程文件保持原位置。
+- 其他账号从空工作台开始，数据与工作区分别位于 `APP_DATA_DIR/accounts/<userId>/data` 和 `workspace`。下载的备份只包含当前账号的数据。
+- 在首页的飞书配置提示中点击「配置飞书」，按「配置应用 → 连接账号 → 同步选项」完成设置，保存后立即生效；也可通过「账号与系统 → 飞书连接与同步」进入。
+- 原有账号保留既有飞书连接；其他账号的飞书配置、授权和加密凭据均存入自己的数据目录，不沿用原账号的文件夹或接收人。浏览器不接收 App Secret、访问令牌或设备码。
+- 生产部署使用 `npm start`；`dist/server/index.js` 是账号网关调用的内部进程入口。运行 `npm run smoke:accounts` 可检查隔离和迁移。
+
 ## 项目概览
 
 | 维度 | 说明 |

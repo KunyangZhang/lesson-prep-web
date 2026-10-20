@@ -16,6 +16,7 @@ import {
 import type { Course, Job } from "./types.js";
 import type { Store } from "./store.js";
 import { sanitizeFilename } from "./store.js";
+import { getFeishuSettings } from "./feishuSettings.js";
 
 interface SyncResult {
   name: string;
@@ -46,9 +47,7 @@ interface NotificationResult {
 
 async function notificationTarget() {
   const receiveId =
-    process.env.FEISHU_NOTIFY_OPEN_ID ||
-    process.env.FEISHU_CLI_NOTIFY_OPEN_ID ||
-    process.env.FEISHU_LESSON_NOTIFY_OPEN_ID ||
+    getFeishuSettings().notifyOpenId ||
     (await getCurrentUserOpenIdWithLarkCli());
   if (!receiveId) return null;
   return {
@@ -63,11 +62,7 @@ function formatCourseTitle(store: Store, course: Course) {
 }
 
 function lessonParentFolderToken() {
-  return (
-    process.env.LESSON_FEISHU_PARENT_FOLDER_TOKEN ||
-    process.env.FEISHU_LESSON_PARENT_FOLDER_TOKEN ||
-    "LY9efBiWjlEAQWdqPrucuLl4nic"
-  );
+  return getFeishuSettings().folderToken;
 }
 
 function sanitizeFolderName(value: string) {
@@ -236,6 +231,7 @@ function formatNotificationError(error: unknown) {
 
 async function sendFeishuNotification(text: string): Promise<NotificationResult> {
   const attemptedAt = new Date().toISOString();
+  if (!getFeishuSettings().notifyEnabled) return { action: "skipped", detail: "飞书消息通知已关闭", attemptedAt };
   const target = await notificationTarget();
   if (!target) return { action: "skipped", detail: "notification target is empty", attemptedAt };
 
@@ -300,7 +296,7 @@ function calendarDescription(store: Store, course: Course, results: SyncResult[]
 }
 
 function calendarConfigured() {
-  return process.env.FEISHU_LESSON_CALENDAR_ENABLED !== "false";
+  return getFeishuSettings().calendarEnabled;
 }
 
 async function createLessonCalendarEvent(store: Store, course: Course, job: Job, results: SyncResult[], folderUrl?: string): Promise<CalendarResult> {
@@ -311,8 +307,8 @@ async function createLessonCalendarEvent(store: Store, course: Course, job: Job,
 
   const durationMinutes = Number.isFinite(course.durationMinutes) && course.durationMinutes > 0 ? course.durationMinutes : 90;
   const end = new Date(start.getTime() + durationMinutes * 60_000);
-  const attendeeIds = process.env.FEISHU_LESSON_CALENDAR_ATTENDEE_IDS || "";
-  const calendarId = process.env.FEISHU_LESSON_CALENDAR_ID || "";
+  const attendeeIds = getFeishuSettings().attendeeIds;
+  const calendarId = getFeishuSettings().calendarId;
   const existingEventId = course.feishuSync?.calendarEventId || "";
   const existingCalendarId = course.feishuSync?.calendarId || calendarId;
   try {
@@ -351,7 +347,7 @@ async function createLessonCalendarEvent(store: Store, course: Course, job: Job,
 }
 
 export async function syncCourseToFeishu(store: Store, course: Course, job: Job) {
-  if (process.env.FEISHU_SYNC_ENABLED === "false") return;
+  if (!getFeishuSettings().syncEnabled) return;
   if (job.status !== "completed") return;
   const recovery = recoverCourseOutputDir(course, job);
   if (recovery.changed) store.save();
@@ -424,7 +420,7 @@ export async function syncCourseToFeishu(store: Store, course: Course, job: Job)
       folderToken: folderToken || (deleteResult.action === "deleted" ? undefined : course.feishuSync?.folderToken),
       folderUrl: folderUrl || (deleteResult.action === "deleted" ? undefined : course.feishuSync?.folderUrl),
       calendarEventId: calendarResult.eventId || course.feishuSync?.calendarEventId,
-      calendarId: calendarResult.calendarId || course.feishuSync?.calendarId || process.env.FEISHU_LESSON_CALENDAR_ID || "",
+      calendarId: calendarResult.calendarId || course.feishuSync?.calendarId || getFeishuSettings().calendarId,
       pdfFileToken: uploadedPdf?.token || course.feishuSync?.pdfFileToken,
       pdfFileUrl: uploadedPdf?.url || course.feishuSync?.pdfFileUrl,
       lastJobId: job.id,

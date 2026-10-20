@@ -20,6 +20,7 @@ import { createDiagnostics } from "./diagnostics.js";
 import { buildDashboardSnapshot } from "./dashboard.js";
 import { buildLearningInsights } from "./insights.js";
 import { resendCourseFeishuNotification, syncCourseToFeishu } from "./feishuSync.js";
+import { createFeishuSettingsRouter } from "./feishuSettings.js";
 import { courseClassroomPdfFileName, recoverCourseOutputDir } from "./courseOutput.js";
 import { assertWithinWorkspace, listCourseFiles, uniqueDestination } from "./files.js";
 import { onJobFinished } from "./jobEvents.js";
@@ -82,11 +83,19 @@ import {
   safeRelativeUploadPath,
   sanitizeFilename
 } from "./store.js";
-import type { Course, CoursePostClassSummary, CourseType, Material, Student } from "./types.js";
+import type { Course, CoursePostClassSummary, CourseType, Material, Student, User } from "./types.js";
 
 ensureAppDirs();
 
 const store = new Store();
+process.on("message", (message: unknown) => {
+  if (!message || typeof message !== "object" || !("type" in message) || message.type !== "identity-updated" || !("user" in message)) return;
+  const user = message.user as User;
+  if (process.env.PREP_ACCOUNT_ID && user.id === process.env.PREP_ACCOUNT_ID) {
+    store.data.users = [user];
+    store.save();
+  }
+});
 recoverInterruptedJobs(store);
 const currentFile = fileURLToPath(import.meta.url);
 const serverDir = path.dirname(currentFile);
@@ -1697,6 +1706,7 @@ app.post("/api/logout", (req, res) => {
 });
 
 const requireAuth = authMiddleware(store);
+app.use("/api/feishu", requireAuth, createFeishuSettingsRouter());
 
 app.get("/api/me", requireAuth, (req, res) => {
   res.json({ user: res.locals.user });
@@ -2859,6 +2869,7 @@ app.use("/api", (req, res) => {
 });
 
 async function attachFrontend() {
+  if (process.env.PREP_ACCOUNT_ID) return;
   if (process.env.NODE_ENV === "production" || config.runningFromDist) {
     const clientDir = path.join(config.projectRoot, "dist", "client");
     app.use(express.static(clientDir));
@@ -2921,7 +2932,9 @@ app.use((error: Error, req: Request, res: Response, next: NextFunction) => {
   res.status(500).json({ error: error.message });
 });
 
-app.listen(config.port, () => {
-  console.log(`Lesson prep web is running at http://localhost:${config.port}`);
+const server = app.listen(config.port, process.env.PREP_LISTEN_HOST || "0.0.0.0", () => {
+  const address = server.address();
+  if (process.send && address && typeof address !== "string") process.send({ type: "ready", port: address.port });
+  console.log(`Lesson prep web is running at http://localhost:${typeof address === "object" && address ? address.port : config.port}`);
   console.log(`Workspace: ${config.workspaceRoot}`);
 });

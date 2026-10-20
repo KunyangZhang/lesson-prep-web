@@ -1,3 +1,5 @@
+import { FeishuConnectionPrompt } from "../settings/FeishuConnectionPrompt";
+import { shortCourseTitle } from "../../courseTitle";
 import {
   ArrowRight,
   BookMarked,
@@ -111,6 +113,8 @@ export function DashboardView({
         </div>
       </header>
 
+      <FeishuConnectionPrompt />
+
       <section className="dashboard-metrics" aria-label="工作台指标">
         <article>
           <span className="metric-icon metric-students"><GraduationCap size={18} /></span>
@@ -157,7 +161,7 @@ export function DashboardView({
                   <span className="attention-signal"><CircleAlert size={17} /></span>
                   <span className="attention-copy">
                     <small>{item.studentName} · {item.type === "trial" ? "试听课" : "正式课"}</small>
-                    <strong>{item.title}</strong>
+                    <strong title={item.title}>{shortCourseTitle(item.title)}</strong>
                     <span>{item.reason}</span>
                   </span>
                   <span className="attention-action">{actionLabel(item.nextAction)} <ArrowRight size={15} /></span>
@@ -182,7 +186,7 @@ export function DashboardView({
               {dashboard.upcomingCourses.map((item) => (
                 <button key={item.courseId} className="upcoming-item" onClick={() => onOpenCourse(item)}>
                   <span className="upcoming-time">{compactDate(item.lessonTime)}</span>
-                  <span className="upcoming-copy"><strong>{item.title}</strong><small>{item.studentName} · {item.durationMinutes} 分钟</small></span>
+                  <span className="upcoming-copy"><strong title={item.title}>{shortCourseTitle(item.title)}</strong><small>{item.studentName} · {item.durationMinutes} 分钟</small></span>
                   <StatusBadge status={item.status} />
                 </button>
               ))}
@@ -223,13 +227,13 @@ export function DashboardView({
                   }}
                 >
                   <span className="activity-icon"><ActivityIcon item={item} /></span>
-                  <span><strong>{item.title}</strong><small>{item.detail}</small></span>
+                  <span><strong title={item.title}>{shortCourseTitle(item.title)}</strong><small>{item.detail}</small></span>
                   <time>{compactDate(item.occurredAt)}</time>
                 </button>
               ))}
             </div>
           ) : (
-            <EmptyState title="暂无动态" description="新建课程、运行任务或上传资料后，这里会记录最近变化。" />
+            <EmptyState title="暂无动态" description="通过智能备课创建课程，或上传资料后，这里会记录最近变化。" />
           )}
         </section>
       </div>

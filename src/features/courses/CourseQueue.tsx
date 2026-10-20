@@ -1,3 +1,4 @@
+import { shortCourseTitle } from "../../courseTitle";
 import { CalendarDays, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { StatusBadge } from "../../components/StatusBadge";
@@ -90,7 +91,7 @@ export function CourseQueue({
                   <StatusBadge status={course.status} />
                   <time>{courseDate(course.lessonTime)}</time>
                 </span>
-                <strong>{course.desiredContent || "未命名课程"}</strong>
+                <strong title={course.desiredContent}>{shortCourseTitle(course.desiredContent)}</strong>
                 <small>{course.type === "trial" ? "试听课" : "正式课"} · {course.grade || "年级待填"} · {course.durationMinutes} 分钟</small>
                 <span className="queue-next-action">{nextAction(course)}</span>
               </button>

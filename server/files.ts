@@ -5,9 +5,18 @@ import type { CourseFile } from "./types.js";
 
 export function assertWithinWorkspace(filePath: string) {
   const resolved = path.resolve(filePath);
-  const root = path.resolve(config.workspaceRoot);
-  if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
+  const canonical = fs.existsSync(resolved) ? fs.realpathSync(resolved) : resolved;
+  const root = fs.existsSync(config.workspaceRoot) ? fs.realpathSync(config.workspaceRoot) : path.resolve(config.workspaceRoot);
+  if (canonical !== root && !canonical.startsWith(`${root}${path.sep}`)) {
     throw new Error("Path is outside the prep workspace.");
+  }
+  if (process.env.PREP_PRIVATE_DATA_ROOT) {
+    const privateRoot = fs.realpathSync(process.env.PREP_PRIVATE_DATA_ROOT);
+    // The legacy workspace can be a parent of the app. Never expose other accounts' data.
+    if (root !== privateRoot && !root.startsWith(`${privateRoot}${path.sep}`) &&
+        (canonical === privateRoot || canonical.startsWith(`${privateRoot}${path.sep}`))) {
+      throw new Error("此文件不属于当前账号的备课工作区。");
+    }
   }
   return resolved;
 }
